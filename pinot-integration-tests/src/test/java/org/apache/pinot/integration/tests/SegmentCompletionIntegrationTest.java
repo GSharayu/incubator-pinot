@@ -103,7 +103,7 @@ public class SegmentCompletionIntegrationTest extends BaseClusterIntegrationTest
 
     // Create server instance with the fake server state model
     _serverHelixManager = HelixManagerFactory
-        .getZKHelixManager(getHelixClusterName(), _serverInstance, InstanceType.PARTICIPANT, ZkStarter.DEFAULT_ZK_STR);
+        .getZKHelixManager(getHelixClusterName(), _serverInstance, InstanceType.PARTICIPANT, ZkStarter.getDefaultZkStr());
     _serverHelixManager.getStateMachineEngine()
         .registerStateModelFactory(SegmentOnlineOfflineStateModelFactory.getStateModelName(),
             new FakeServerSegmentStateModelFactory());

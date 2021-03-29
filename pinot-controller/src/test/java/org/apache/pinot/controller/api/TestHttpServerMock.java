@@ -57,6 +57,7 @@ class TestHttpServerMock {
 
   public void stop() {
     _httpServer.shutdownNow();
+    _httpServer = null;
   }
 
   private int findRandomOpenPort()

@@ -141,7 +141,7 @@ public class BasicAuthRealtimeIntegrationTest extends BaseClusterIntegrationTest
   protected Connection getPinotConnection() {
     if (_pinotConnection == null) {
       _pinotConnection =
-          ConnectionFactory.fromZookeeper(ZkStarter.DEFAULT_ZK_STR + "/" + getHelixClusterName(), AUTH_HEADER);
+          ConnectionFactory.fromZookeeper(ZkStarter.getDefaultZkStr() + "/" + getHelixClusterName(), AUTH_HEADER);
     }
     return _pinotConnection;
   }
