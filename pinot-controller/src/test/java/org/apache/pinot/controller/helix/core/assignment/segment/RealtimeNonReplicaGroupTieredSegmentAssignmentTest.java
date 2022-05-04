@@ -121,7 +121,6 @@ public class RealtimeNonReplicaGroupTieredSegmentAssignmentTest {
         new TableConfigBuilder(TableType.REALTIME).setTableName(RAW_TABLE_NAME).setNumReplicas(NUM_REPLICAS)
             .setTierConfigList(tierConfigList).setLLC(true).build();
     _segmentAssignment = SegmentAssignmentFactory.getSegmentAssignment(null, tableConfig);
-
     _instancePartitionsMap = new TreeMap<>();
     // CONSUMING instances:
     // {
