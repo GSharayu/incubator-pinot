@@ -40,11 +40,12 @@ public interface SegmentAssignment {
 
   /**
    * Initializes the segment assignment.
-   *
    * @param helixManager Helix manager
    * @param tableConfig Table config
+   * @param instancePartitionsMap Map from type (OFFLINE|CONSUMING|COMPLETED) to instance partitions
    */
-  void init(HelixManager helixManager, TableConfig tableConfig);
+  void init(HelixManager helixManager, TableConfig tableConfig,
+      Map<InstancePartitionsType, InstancePartitions> instancePartitionsMap);
 
   /**
    * Assigns segment to instances.

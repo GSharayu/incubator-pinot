@@ -120,7 +120,6 @@ public class RealtimeNonReplicaGroupTieredSegmentAssignmentTest {
     TableConfig tableConfig =
         new TableConfigBuilder(TableType.REALTIME).setTableName(RAW_TABLE_NAME).setNumReplicas(NUM_REPLICAS)
             .setTierConfigList(tierConfigList).setLLC(true).build();
-    _segmentAssignment = SegmentAssignmentFactory.getSegmentAssignment(null, tableConfig);
 
     _instancePartitionsMap = new TreeMap<>();
     // CONSUMING instances:
@@ -158,6 +157,8 @@ public class RealtimeNonReplicaGroupTieredSegmentAssignmentTest {
         new Tier(TIER_C_NAME, new TestSegmentSelectorC(), new PinotServerTierStorage(TAG_C_NAME, null, null)),
         new Tier(TIER_B_NAME, new TestSegmentSelectorB(), new PinotServerTierStorage(TAG_B_NAME, null, null)),
         new Tier(TIER_A_NAME, new TestSegmentSelectorA(), new PinotServerTierStorage(TAG_A_NAME, null, null)));
+
+    _segmentAssignment = SegmentAssignmentFactory.getSegmentAssignment(null, tableConfig, _instancePartitionsMap);
   }
 
   @Test

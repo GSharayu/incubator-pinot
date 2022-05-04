@@ -18,9 +18,12 @@
  */
 package org.apache.pinot.controller.helix.core.assignment.segment;
 
+import java.util.Map;
 import org.apache.helix.HelixManager;
+import org.apache.pinot.common.assignment.InstancePartitions;
 import org.apache.pinot.spi.config.table.TableConfig;
 import org.apache.pinot.spi.config.table.TableType;
+import org.apache.pinot.spi.config.table.assignment.InstancePartitionsType;
 
 
 /**
@@ -30,15 +33,15 @@ public class SegmentAssignmentFactory {
   private SegmentAssignmentFactory() {
   }
 
-  public static SegmentAssignment getSegmentAssignment(HelixManager helixManager, TableConfig tableConfig) {
+  public static SegmentAssignment getSegmentAssignment(HelixManager helixManager, TableConfig tableConfig,
+      Map<InstancePartitionsType, InstancePartitions> instancePartitionsMap) {
     SegmentAssignment segmentAssignment;
     if (tableConfig.getTableType() == TableType.OFFLINE) {
-      segmentAssignment =
-          tableConfig.isDimTable() ? new OfflineDimTableSegmentAssignment() : new OfflineSegmentAssignment();
+      segmentAssignment = new OfflineSegmentAssignment();
     } else {
       segmentAssignment = new RealtimeSegmentAssignment();
     }
-    segmentAssignment.init(helixManager, tableConfig);
+    segmentAssignment.init(helixManager, tableConfig, instancePartitionsMap);
     return segmentAssignment;
   }
 }

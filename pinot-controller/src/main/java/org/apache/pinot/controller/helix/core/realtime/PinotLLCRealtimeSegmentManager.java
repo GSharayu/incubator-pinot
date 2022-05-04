@@ -316,9 +316,10 @@ public class PinotLLCRealtimeSegmentManager {
     int numPartitionGroups = newPartitionGroupMetadataList.size();
     int numReplicas = getNumReplicas(tableConfig, instancePartitions);
 
-    SegmentAssignment segmentAssignment = SegmentAssignmentFactory.getSegmentAssignment(_helixManager, tableConfig);
     Map<InstancePartitionsType, InstancePartitions> instancePartitionsMap =
         Collections.singletonMap(InstancePartitionsType.CONSUMING, instancePartitions);
+    SegmentAssignment segmentAssignment = SegmentAssignmentFactory.getSegmentAssignment(_helixManager, tableConfig,
+        instancePartitionsMap);
 
     long currentTimeMs = getCurrentTimeMs();
     Map<String, Map<String, String>> instanceStatesMap = idealState.getRecord().getMapFields();
@@ -577,9 +578,10 @@ public class PinotLLCRealtimeSegmentManager {
     }
 
     // Step-3
-    SegmentAssignment segmentAssignment = SegmentAssignmentFactory.getSegmentAssignment(_helixManager, tableConfig);
     Map<InstancePartitionsType, InstancePartitions> instancePartitionsMap =
         Collections.singletonMap(InstancePartitionsType.CONSUMING, instancePartitions);
+    SegmentAssignment segmentAssignment = SegmentAssignmentFactory.getSegmentAssignment(_helixManager, tableConfig,
+        instancePartitionsMap);
 
     // When multiple segments of the same table complete around the same time it is possible that
     // the idealstate update fails due to contention. We serialize the updates to the idealstate
@@ -1065,9 +1067,10 @@ public class PinotLLCRealtimeSegmentManager {
         newPartitionGroupMetadataList.stream().map(PartitionGroupMetadata::getPartitionGroupId)
             .collect(Collectors.toSet());
 
-    SegmentAssignment segmentAssignment = SegmentAssignmentFactory.getSegmentAssignment(_helixManager, tableConfig);
     Map<InstancePartitionsType, InstancePartitions> instancePartitionsMap =
         Collections.singletonMap(InstancePartitionsType.CONSUMING, instancePartitions);
+    SegmentAssignment segmentAssignment = SegmentAssignmentFactory.getSegmentAssignment(_helixManager, tableConfig,
+        instancePartitionsMap);
 
     Map<String, Map<String, String>> instanceStatesMap = idealState.getRecord().getMapFields();
     long currentTimeMs = getCurrentTimeMs();

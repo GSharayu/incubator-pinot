@@ -16,7 +16,7 @@
  * specific language governing permissions and limitations
  * under the License.
  */
-package org.apache.pinot.controller.helix.core.assignment.segment;
+package org.apache.pinot.controller.helix.core.assignment.segment.strategy;
 
 import com.google.common.collect.ImmutableList;
 import java.util.ArrayList;
@@ -29,6 +29,10 @@ import org.apache.helix.HelixProperty;
 import org.apache.helix.PropertyKey;
 import org.apache.helix.model.InstanceConfig;
 import org.apache.helix.zookeeper.datamodel.ZNRecord;
+import org.apache.pinot.controller.helix.core.assignment.segment.OfflineSegmentAssignment;
+import org.apache.pinot.controller.helix.core.assignment.segment.SegmentAssignment;
+import org.apache.pinot.controller.helix.core.assignment.segment.SegmentAssignmentFactory;
+import org.apache.pinot.controller.helix.core.assignment.segment.SegmentAssignmentTestUtils;
 import org.apache.pinot.spi.config.table.TableConfig;
 import org.apache.pinot.spi.config.table.TableType;
 import org.apache.pinot.spi.utils.builder.TableConfigBuilder;
@@ -43,7 +47,7 @@ import static org.testng.Assert.assertEqualsNoOrder;
 import static org.testng.Assert.assertTrue;
 
 
-public class OfflineDimTableSegmentAssignmentTest {
+public class DimTableSegmentAssignmentStrategyTest {
   private static final String INSTANCE_NAME_PREFIX = "instance_";
   private static final int NUM_INSTANCES = 10;
   private static final List<String> INSTANCES =
@@ -61,14 +65,13 @@ public class OfflineDimTableSegmentAssignmentTest {
   public void setup() {
     TableConfig tableConfig =
         new TableConfigBuilder(TableType.OFFLINE).setTableName(RAW_TABLE_NAME).setIsDimTable(true).build();
-
     _helixManager = mock(HelixManager.class);
-    _segmentAssignment = SegmentAssignmentFactory.getSegmentAssignment(_helixManager, tableConfig);
+    _segmentAssignment = SegmentAssignmentFactory.getSegmentAssignment(_helixManager, tableConfig, null);
   }
 
   @Test
   public void testFactory() {
-    assertTrue(_segmentAssignment instanceof OfflineDimTableSegmentAssignment);
+    assertTrue(_segmentAssignment instanceof OfflineSegmentAssignment);
   }
 
   @Test
