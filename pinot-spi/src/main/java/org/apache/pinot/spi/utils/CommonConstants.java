@@ -634,6 +634,8 @@ public class CommonConstants {
     public static class AssignmentStrategy {
       public static final String BALANCE_NUM_SEGMENT_ASSIGNMENT_STRATEGY = "BalanceNumSegmentAssignmentStrategy";
       public static final String REPLICA_GROUP_SEGMENT_ASSIGNMENT_STRATEGY = "ReplicaGroupSegmentAssignmentStrategy";
+      public static final String PARTITION_BASED_SEGMENT_ASSIGNMENT_STRATEGY = "PartitionBasedSegmentAssignmentStrategy";
+      public static final String ALL_SERVERS_SEGMENT_ASSIGNMENT_STRATEGY = "AllServersSegmentAssignmentStrategy";
     }
 
     public static class BuiltInVirtualColumn {

@@ -44,6 +44,7 @@ import org.apache.pinot.spi.config.table.TunerConfig;
 import org.apache.pinot.spi.config.table.UpsertConfig;
 import org.apache.pinot.spi.config.table.assignment.InstanceAssignmentConfig;
 import org.apache.pinot.spi.config.table.assignment.InstancePartitionsType;
+import org.apache.pinot.spi.config.table.assignment.SegmentAssignmentConfig;
 import org.apache.pinot.spi.config.table.ingestion.BatchIngestionConfig;
 import org.apache.pinot.spi.config.table.ingestion.IngestionConfig;
 import org.apache.pinot.spi.config.table.ingestion.StreamIngestionConfig;
@@ -119,6 +120,14 @@ public class TableConfigUtils {
           });
     }
 
+    Map<InstancePartitionsType, SegmentAssignmentConfig> segmentAssignmentConfigMap = null;
+    String segmentAssignmentConfigMapString = simpleFields.get(TableConfig.SEGMENT_ASSIGNMENT_CONFIG_MAP_KEY);
+    if (segmentAssignmentConfigMapString != null) {
+      segmentAssignmentConfigMap = JsonUtils.stringToObject(segmentAssignmentConfigMapString,
+          new TypeReference<Map<InstancePartitionsType, SegmentAssignmentConfig>>() {
+          });
+    }
+
     List<FieldConfig> fieldConfigList = null;
     String fieldConfigListString = simpleFields.get(TableConfig.FIELD_CONFIG_LIST_KEY);
     if (fieldConfigListString != null) {
@@ -159,8 +168,8 @@ public class TableConfigUtils {
     }
 
     return new TableConfig(tableName, tableType, validationConfig, tenantConfig, indexingConfig, customConfig,
-        quotaConfig, taskConfig, routingConfig, queryConfig, instanceAssignmentConfigMap, fieldConfigList, upsertConfig,
-        dedupConfig, ingestionConfig, tierConfigList, isDimTable, tunerConfigList);
+        quotaConfig, taskConfig, routingConfig, queryConfig, instanceAssignmentConfigMap, segmentAssignmentConfigMap,
+        fieldConfigList, upsertConfig, dedupConfig, ingestionConfig, tierConfigList, isDimTable, tunerConfigList);
   }
 
   public static ZNRecord toZNRecord(TableConfig tableConfig)
@@ -198,6 +207,12 @@ public class TableConfigUtils {
     if (instanceAssignmentConfigMap != null) {
       simpleFields
           .put(TableConfig.INSTANCE_ASSIGNMENT_CONFIG_MAP_KEY, JsonUtils.objectToString(instanceAssignmentConfigMap));
+    }
+    Map<InstancePartitionsType, SegmentAssignmentConfig> segmentAssignmentConfigMap =
+        tableConfig.getSegmentAssignmentConfigMap();
+    if (segmentAssignmentConfigMap != null) {
+      simpleFields
+          .put(TableConfig.SEGMENT_ASSIGNMENT_CONFIG_MAP_KEY, JsonUtils.objectToString(segmentAssignmentConfigMap));
     }
     List<FieldConfig> fieldConfigList = tableConfig.getFieldConfigList();
     if (fieldConfigList != null) {

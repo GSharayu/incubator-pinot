@@ -29,6 +29,7 @@ import javax.annotation.Nullable;
 import org.apache.pinot.spi.config.BaseJsonConfig;
 import org.apache.pinot.spi.config.table.assignment.InstanceAssignmentConfig;
 import org.apache.pinot.spi.config.table.assignment.InstancePartitionsType;
+import org.apache.pinot.spi.config.table.assignment.SegmentAssignmentConfig;
 import org.apache.pinot.spi.config.table.ingestion.IngestionConfig;
 import org.apache.pinot.spi.utils.builder.TableNameBuilder;
 
@@ -47,6 +48,7 @@ public class TableConfig extends BaseJsonConfig {
   public static final String ROUTING_CONFIG_KEY = "routing";
   public static final String QUERY_CONFIG_KEY = "query";
   public static final String INSTANCE_ASSIGNMENT_CONFIG_MAP_KEY = "instanceAssignmentConfigMap";
+  public static final String SEGMENT_ASSIGNMENT_CONFIG_MAP_KEY = "segmentAssignmentConfigMap";
   public static final String FIELD_CONFIG_LIST_KEY = "fieldConfigList";
   public static final String UPSERT_CONFIG_KEY = "upsertConfig";
   public static final String DEDUP_CONFIG_KEY = "dedupConfig";
@@ -84,6 +86,7 @@ public class TableConfig extends BaseJsonConfig {
   private RoutingConfig _routingConfig;
   private QueryConfig _queryConfig;
   private Map<InstancePartitionsType, InstanceAssignmentConfig> _instanceAssignmentConfigMap;
+  private Map<InstancePartitionsType, SegmentAssignmentConfig> _segmentAssignmentConfigMap;
   private List<FieldConfig> _fieldConfigList;
 
   @JsonPropertyDescription(value = "upsert related config")
@@ -115,6 +118,8 @@ public class TableConfig extends BaseJsonConfig {
       @JsonProperty(QUERY_CONFIG_KEY) @Nullable QueryConfig queryConfig,
       @JsonProperty(INSTANCE_ASSIGNMENT_CONFIG_MAP_KEY) @Nullable
           Map<InstancePartitionsType, InstanceAssignmentConfig> instanceAssignmentConfigMap,
+      @JsonProperty(SEGMENT_ASSIGNMENT_CONFIG_MAP_KEY) @Nullable
+          Map<InstancePartitionsType, SegmentAssignmentConfig> segmentAssignmentConfigMap,
       @JsonProperty(FIELD_CONFIG_LIST_KEY) @Nullable List<FieldConfig> fieldConfigList,
       @JsonProperty(UPSERT_CONFIG_KEY) @Nullable UpsertConfig upsertConfig,
       @JsonProperty(DEDUP_CONFIG_KEY) @Nullable DedupConfig dedupConfig,
@@ -143,6 +148,7 @@ public class TableConfig extends BaseJsonConfig {
     _routingConfig = routingConfig;
     _queryConfig = queryConfig;
     _instanceAssignmentConfigMap = instanceAssignmentConfigMap;
+    _segmentAssignmentConfigMap = segmentAssignmentConfigMap;
     _fieldConfigList = fieldConfigList;
     _upsertConfig = upsertConfig;
     _dedupConfig = dedupConfig;
@@ -253,6 +259,18 @@ public class TableConfig extends BaseJsonConfig {
       Map<InstancePartitionsType, InstanceAssignmentConfig> instanceAssignmentConfigMap) {
     _instanceAssignmentConfigMap = instanceAssignmentConfigMap;
   }
+
+  @JsonProperty(SEGMENT_ASSIGNMENT_CONFIG_MAP_KEY)
+  @Nullable
+  public Map<InstancePartitionsType, SegmentAssignmentConfig> getSegmentAssignmentConfigMap() {
+    return _segmentAssignmentConfigMap;
+  }
+
+  public void setSegmentAssignmentConfigMap(
+      Map<InstancePartitionsType, SegmentAssignmentConfig> segmentAssignmentConfigMap) {
+    _segmentAssignmentConfigMap = segmentAssignmentConfigMap;
+  }
+
 
   @JsonProperty(FIELD_CONFIG_LIST_KEY)
   @Nullable

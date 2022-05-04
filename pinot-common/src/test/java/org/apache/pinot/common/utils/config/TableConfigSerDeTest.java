@@ -367,6 +367,7 @@ public class TableConfigSerDeTest {
     assertNull(tableConfig.getRoutingConfig());
     assertNull(tableConfig.getQueryConfig());
     assertNull(tableConfig.getInstanceAssignmentConfigMap());
+    assertNull(tableConfig.getSegmentAssignmentConfigMap());
     assertNull(tableConfig.getFieldConfigList());
 
     // Serialize
@@ -382,6 +383,7 @@ public class TableConfigSerDeTest {
     assertFalse(tableConfigJson.has(TableConfig.ROUTING_CONFIG_KEY));
     assertFalse(tableConfigJson.has(TableConfig.QUERY_CONFIG_KEY));
     assertFalse(tableConfigJson.has(TableConfig.INSTANCE_ASSIGNMENT_CONFIG_MAP_KEY));
+    assertFalse(tableConfigJson.has(TableConfig.SEGMENT_ASSIGNMENT_CONFIG_MAP_KEY));
     assertFalse(tableConfigJson.has(TableConfig.FIELD_CONFIG_LIST_KEY));
   }
 
