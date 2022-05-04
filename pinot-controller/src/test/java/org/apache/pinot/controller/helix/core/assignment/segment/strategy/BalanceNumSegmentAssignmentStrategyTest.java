@@ -16,7 +16,7 @@
  * specific language governing permissions and limitations
  * under the License.
  */
-package org.apache.pinot.controller.helix.core.assignment.segment;
+package org.apache.pinot.controller.helix.core.assignment.segment.strategy;
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -27,6 +27,11 @@ import java.util.TreeMap;
 import org.apache.commons.configuration.BaseConfiguration;
 import org.apache.commons.configuration.Configuration;
 import org.apache.pinot.common.assignment.InstancePartitions;
+import org.apache.pinot.controller.helix.core.assignment.segment.OfflineSegmentAssignment;
+import org.apache.pinot.controller.helix.core.assignment.segment.SegmentAssignment;
+import org.apache.pinot.controller.helix.core.assignment.segment.SegmentAssignmentFactory;
+import org.apache.pinot.controller.helix.core.assignment.segment.SegmentAssignmentTestUtils;
+import org.apache.pinot.controller.helix.core.assignment.segment.SegmentAssignmentUtils;
 import org.apache.pinot.spi.config.table.TableConfig;
 import org.apache.pinot.spi.config.table.TableType;
 import org.apache.pinot.spi.config.table.assignment.InstancePartitionsType;
@@ -40,7 +45,7 @@ import static org.testng.Assert.assertEquals;
 import static org.testng.Assert.assertTrue;
 
 
-public class OfflineNonReplicaGroupSegmentAssignmentTest {
+public class BalanceNumSegmentAssignmentStrategyTest {
   private static final int NUM_REPLICAS = 3;
   private static final String SEGMENT_NAME_PREFIX = "segment_";
   private static final int NUM_SEGMENTS = 100;
@@ -61,7 +66,6 @@ public class OfflineNonReplicaGroupSegmentAssignmentTest {
   public void setUp() {
     TableConfig tableConfig =
         new TableConfigBuilder(TableType.OFFLINE).setTableName(RAW_TABLE_NAME).setNumReplicas(NUM_REPLICAS).build();
-    _segmentAssignment = SegmentAssignmentFactory.getSegmentAssignment(null, tableConfig);
 
     // {
     //   0_0=[instance_0, instance_1, instance_2, instance_3, instance_4, instance_5, instance_6, instance_7,
@@ -70,6 +74,7 @@ public class OfflineNonReplicaGroupSegmentAssignmentTest {
     InstancePartitions instancePartitions = new InstancePartitions(INSTANCE_PARTITIONS_NAME);
     instancePartitions.setInstances(0, 0, INSTANCES);
     _instancePartitionsMap = Collections.singletonMap(InstancePartitionsType.OFFLINE, instancePartitions);
+    _segmentAssignment = SegmentAssignmentFactory.getSegmentAssignment(null, tableConfig, _instancePartitionsMap);
   }
 
   @Test

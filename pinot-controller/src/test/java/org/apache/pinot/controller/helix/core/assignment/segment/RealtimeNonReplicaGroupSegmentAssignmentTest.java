@@ -82,8 +82,6 @@ public class RealtimeNonReplicaGroupSegmentAssignmentTest {
     TableConfig tableConfig =
         new TableConfigBuilder(TableType.REALTIME).setTableName(RAW_TABLE_NAME).setNumReplicas(NUM_REPLICAS)
             .setLLC(true).build();
-    _segmentAssignment = SegmentAssignmentFactory.getSegmentAssignment(createHelixManager(), tableConfig);
-
     _instancePartitionsMap = new TreeMap<>();
     // CONSUMING instances:
     // {
@@ -104,6 +102,8 @@ public class RealtimeNonReplicaGroupSegmentAssignmentTest {
     InstancePartitions completedInstancePartitions = new InstancePartitions(COMPLETED_INSTANCE_PARTITIONS_NAME);
     completedInstancePartitions.setInstances(0, 0, COMPLETED_INSTANCES);
     _instancePartitionsMap.put(InstancePartitionsType.COMPLETED, completedInstancePartitions);
+    _segmentAssignment =
+        SegmentAssignmentFactory.getSegmentAssignment(createHelixManager(), tableConfig, _instancePartitionsMap);
   }
 
   @Test
