@@ -2127,7 +2127,8 @@ public class PinotHelixResourceManager {
       Preconditions.checkState(tableConfig != null, "Failed to find table config for table: " + tableNameWithType);
       Map<InstancePartitionsType, InstancePartitions> instancePartitionsMap =
           fetchOrComputeInstancePartitions(tableNameWithType, tableConfig);
-      SegmentAssignment segmentAssignment = SegmentAssignmentFactory.getSegmentAssignment(_helixZkManager, tableConfig);
+      SegmentAssignment segmentAssignment =
+          SegmentAssignmentFactory.getSegmentAssignment(_helixZkManager, tableConfig, instancePartitionsMap);
       synchronized (getTableUpdaterLock(tableNameWithType)) {
         HelixHelper.updateIdealState(_helixZkManager, tableNameWithType, idealState -> {
           assert idealState != null;

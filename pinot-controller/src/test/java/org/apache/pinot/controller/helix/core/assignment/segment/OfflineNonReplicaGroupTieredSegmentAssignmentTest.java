@@ -112,8 +112,6 @@ public class OfflineNonReplicaGroupTieredSegmentAssignmentTest {
         new TableConfigBuilder(TableType.OFFLINE).setTableName(RAW_TABLE_NAME).setNumReplicas(NUM_REPLICAS)
             .setTierConfigList(tierConfigList).build();
 
-    _segmentAssignment = SegmentAssignmentFactory.getSegmentAssignment(null, tableConfig);
-
     // {
     //   0_0=[instance_0, instance_1, instance_2, instance_3, instance_4, instance_5, instance_6, instance_7,
     //   instance_8, instance_9]
@@ -136,6 +134,8 @@ public class OfflineNonReplicaGroupTieredSegmentAssignmentTest {
         new Tier(TIER_C_NAME, new TestSegmentSelectorC(), new PinotServerTierStorage(TAG_C_NAME, null, null)),
         new Tier(TIER_B_NAME, new TestSegmentSelectorB(), new PinotServerTierStorage(TAG_B_NAME, null, null)),
         new Tier(TIER_A_NAME, new TestSegmentSelectorA(), new PinotServerTierStorage(TAG_A_NAME, null, null)));
+    _segmentAssignment =
+        SegmentAssignmentFactory.getSegmentAssignment(null, tableConfig, _instancePartitionsMap);
   }
 
   @Test

@@ -212,7 +212,9 @@ public class TableRebalancer {
         getTierToInstancePartitionsMap(tableNameWithType, sortedTiers);
 
     LOGGER.info("Calculating the target assignment for table: {}", tableNameWithType);
-    SegmentAssignment segmentAssignment = SegmentAssignmentFactory.getSegmentAssignment(_helixManager, tableConfig);
+    SegmentAssignment segmentAssignment = SegmentAssignmentFactory.getSegmentAssignment(_helixManager, tableConfig,
+        instancePartitionsMap);
+
     Map<String, Map<String, String>> currentAssignment = currentIdealState.getRecord().getMapFields();
     Map<String, Map<String, String>> targetAssignment;
     try {
