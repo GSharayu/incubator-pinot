@@ -131,6 +131,8 @@ public class TransformFunctionFactory {
     typeToImplementation.put(TransformFunctionType.INIDSET, InIdSetTransformFunction.class);
     typeToImplementation.put(TransformFunctionType.LOOKUP, LookupTransformFunction.class);
 
+    typeToImplementation.put(TransformFunctionType.EXTRACT, ExtractTransformFunction.class);
+
     // Regexp functions
     typeToImplementation.put(TransformFunctionType.REGEXP_EXTRACT,
         RegexpExtractTransformFunction.class);
@@ -159,6 +161,7 @@ public class TransformFunctionFactory {
     // logical functions
     typeToImplementation.put(TransformFunctionType.AND, AndOperatorTransformFunction.class);
     typeToImplementation.put(TransformFunctionType.OR, OrOperatorTransformFunction.class);
+    typeToImplementation.put(TransformFunctionType.NOT, NotOperatorTransformFunction.class);
 
     // geo functions
     // geo constructors
