@@ -72,6 +72,9 @@ public class QueryRunnerTest extends QueryRunnerTestBase {
         // No match filter
         new Object[]{"SELECT * FROM b WHERE col3 < 0", 0},
 
+        // Hybrid table
+        new Object[]{"SELECT * FROM d", 15},
+
         // Specifically table A has 15 rows (10 on server1 and 5 on server2) and table B has 5 rows (all on server1),
         // thus the final JOIN result will be 15 x 1 = 15.
         // Next join with table C which has (5 on server1 and 10 on server2), since data is identical. each of the row
@@ -82,12 +85,14 @@ public class QueryRunnerTest extends QueryRunnerTestBase {
         // Specifically table A has 15 rows (10 on server1 and 5 on server2) and table B has 5 rows (all on server1),
         // thus the final JOIN result will be 15 x 1 = 15.
         new Object[]{"SELECT * FROM a JOIN b on a.col1 = b.col1", 15},
+        new Object[]{"SELECT * FROM a JOIN b USING (col1)", 15},
+
 
         // Query with function in JOIN keys, table A and B are both (1, 42, 1, 42, 1), with table A cycling 3 times.
         // Because:
         //   - MOD(a.col3, 2) will have 6 (42)s equal to 0 and 9 (1)s equals to 1
         //   - MOD(b.col3, 3) will have 2 (42)s equal to 0 and 3 (1)s equals to 1;
-        // final results are 6 * 2 + 9 * 3 = 27 rows
+        // final results are 6 * 2 + 9 * 3 = 39 rows
         new Object[]{"SELECT a.col1, a.col3, b.col3 FROM a JOIN b ON MOD(a.col3, 2) = MOD(b.col3, 3)", 39},
 
         // Specifically table A has 15 rows (10 on server1 and 5 on server2) and table B has 5 rows (all on server1),
@@ -136,9 +141,14 @@ public class QueryRunnerTest extends QueryRunnerTestBase {
             + " WHERE a.col3 >= 0 GROUP BY a.col1, a.col2", 5},
 
         // GROUP BY after JOIN
-        // only 3 GROUP BY key exist because b.col2 cycles between "foo", "bar", "alice".
+        //   - optimizable transport for GROUP BY key after JOIN, using SINGLETON exchange
+        //     only 3 GROUP BY key exist because b.col2 cycles between "foo", "bar", "alice".
         new Object[]{"SELECT a.col1, SUM(b.col3), COUNT(*), SUM(2) FROM a JOIN b ON a.col1 = b.col2 "
             + " WHERE a.col3 >= 0 GROUP BY a.col1", 3},
+        //   - non-optimizable transport for GROUP BY key after JOIN, using HASH exchange
+        //     only 2 GROUP BY key exist for b.col3.
+        new Object[]{"SELECT b.col3, SUM(a.col3) FROM a JOIN b"
+            + " on a.col1 = b.col1 AND a.col2 = b.col2 GROUP BY b.col3", 2},
 
         // Sub-query
         new Object[]{"SELECT b.col1, b.col3, i.maxVal FROM b JOIN "
@@ -157,6 +167,13 @@ public class QueryRunnerTest extends QueryRunnerTestBase {
 
         // Order-by
         new Object[]{"SELECT a.col1, a.col3, b.col3 FROM a JOIN b ON a.col1 = b.col1 ORDER BY a.col3, b.col3 DESC", 15},
+
+        // test customized function
+        //   - on leaf stage
+        new Object[]{"SELECT dateTrunc('DAY', ts) FROM a LIMIT 10", 15},
+        //   - on intermediate stage
+        new Object[]{"SELECT dateTrunc('DAY', round(a.ts, b.ts)) FROM a JOIN b "
+            + "ON a.col1 = b.col1 AND a.col2 = b.col2", 15},
     };
   }
 }
