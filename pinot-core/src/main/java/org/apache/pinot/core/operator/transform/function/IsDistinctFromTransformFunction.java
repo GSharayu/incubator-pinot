@@ -16,22 +16,27 @@
  * specific language governing permissions and limitations
  * under the License.
  */
-package org.apache.pinot.query.validate;
-
-import org.apache.calcite.rel.type.RelDataTypeFactory;
-import org.apache.calcite.sql.SqlOperatorTable;
-import org.apache.calcite.sql.validate.SqlConformanceEnum;
-import org.apache.calcite.sql.validate.SqlValidatorCatalogReader;
-import org.apache.calcite.sql.validate.SqlValidatorImpl;
-
+package org.apache.pinot.core.operator.transform.function;
 
 /**
- * The {@code Validator} overwrites Calcite's Validator with Pinot specific logics.
+ * The <code>IsDistinctFromTransformFunction</code> extends <code>DistinctFromTransformFunction</code> to implement the
+ * IS_DISTINCT_FROM operator.
+ *
+ * The results are in boolean format and stored as an integer array with 1 represents true and 0 represents false.
+ * Expected result:
+ * NUll IS_DISTINCT_FROM Value: 1
+ * NUll IS_DISTINCT_FROM Null: 0
+ * ValueA IS_DISTINCT_FROM ValueB: NotEQUALS(ValueA, ValueB)
+ *
+ * Note this operator only takes column names for now.
+ * SQL Syntax:
+ *    columnA IS DISTINCT FROM columnB
+ *
+ * Sample Usage:
+ *    IS_DISTINCT_FROM(columnA, columnB)
  */
-public class Validator extends SqlValidatorImpl {
-
-  public Validator(SqlOperatorTable opTab, SqlValidatorCatalogReader catalogReader, RelDataTypeFactory typeFactory) {
-    // TODO: support BABEL validator. Currently parser conformance is set to use BABEL.
-    super(opTab, catalogReader, typeFactory, Config.DEFAULT.withSqlConformance(SqlConformanceEnum.LENIENT));
+public class IsDistinctFromTransformFunction extends DistinctFromTransformFunction {
+  public IsDistinctFromTransformFunction() {
+    super(true);
   }
 }
