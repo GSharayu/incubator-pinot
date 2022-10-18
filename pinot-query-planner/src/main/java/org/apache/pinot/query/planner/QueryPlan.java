@@ -71,4 +71,17 @@ public class QueryPlan {
   public List<Pair<Integer, String>> getQueryResultFields() {
     return _queryResultFields;
   }
+
+  /**
+   * Explains the {@code QueryPlan}
+   *
+   * @return a human-readable tree explaining the query plan
+   * @see ExplainPlanStageVisitor#explain(QueryPlan)
+   * @apiNote this is <b>NOT</b> identical to the SQL {@code EXPLAIN PLAN FOR} functionality
+   *          and is instead intended to be used by developers debugging during feature
+   *          development
+   */
+  public String explain() {
+    return ExplainPlanStageVisitor.explain(this);
+  }
 }

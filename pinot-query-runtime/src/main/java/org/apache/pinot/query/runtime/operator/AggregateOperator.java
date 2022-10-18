@@ -25,10 +25,10 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import javax.annotation.Nullable;
+import org.apache.pinot.common.datablock.BaseDataBlock;
 import org.apache.pinot.common.request.context.ExpressionContext;
 import org.apache.pinot.common.utils.DataSchema;
 import org.apache.pinot.core.common.Operator;
-import org.apache.pinot.core.common.datablock.BaseDataBlock;
 import org.apache.pinot.core.data.table.Key;
 import org.apache.pinot.core.operator.BaseOperator;
 import org.apache.pinot.core.query.aggregation.function.AggregationFunction;
@@ -48,7 +48,7 @@ import org.apache.pinot.spi.data.FieldSpec;
 public class AggregateOperator extends BaseOperator<TransferableBlock> {
   private static final String EXPLAIN_NAME = "AGGREGATE_OPERATOR";
 
-  private BaseOperator<TransferableBlock> _inputOperator;
+  private Operator<TransferableBlock> _inputOperator;
   private List<RexExpression> _aggCalls;
   private List<RexExpression> _groupSet;
 
@@ -64,7 +64,7 @@ public class AggregateOperator extends BaseOperator<TransferableBlock> {
   private boolean _isCumulativeBlockConstructed;
 
   // TODO: refactor Pinot Reducer code to support the intermediate stage agg operator.
-  public AggregateOperator(BaseOperator<TransferableBlock> inputOperator, DataSchema dataSchema,
+  public AggregateOperator(Operator<TransferableBlock> inputOperator, DataSchema dataSchema,
       List<RexExpression> aggCalls, List<RexExpression> groupSet, DataSchema upstreamDataSchema) {
     _inputOperator = inputOperator;
     _aggCalls = aggCalls;
@@ -204,7 +204,7 @@ public class AggregateOperator extends BaseOperator<TransferableBlock> {
             ExpressionContext.forIdentifier(String.valueOf(aggregationFunctionInputRef)));
       // COUNT(*) is rewritten to SUM(1)
       case "COUNT":
-        return new SumAggregationFunction(ExpressionContext.forLiteral("1"));
+        return new SumAggregationFunction(ExpressionContext.forLiteralContext(FieldSpec.DataType.INT, 1));
       default:
         throw new IllegalStateException(
             "Unexpected value: " + ((RexExpression.FunctionCall) aggCall).getFunctionName());

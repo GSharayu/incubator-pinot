@@ -46,24 +46,22 @@ public class KafkaPartitionLevelConsumer extends KafkaPartitionLevelConnectionHa
   }
 
   @Override
-  public MessageBatch<StreamMessage> fetchMessages(StreamPartitionMsgOffset startMsgOffset,
+  public MessageBatch<StreamMessage<byte[]>> fetchMessages(StreamPartitionMsgOffset startMsgOffset,
       StreamPartitionMsgOffset endMsgOffset, int timeoutMillis) {
     final long startOffset = ((LongMsgOffset) startMsgOffset).getOffset();
     final long endOffset = endMsgOffset == null ? Long.MAX_VALUE : ((LongMsgOffset) endMsgOffset).getOffset();
     return fetchMessages(startOffset, endOffset, timeoutMillis);
   }
 
-  public MessageBatch<StreamMessage> fetchMessages(long startOffset, long endOffset, int timeoutMillis) {
+  public MessageBatch<StreamMessage<byte[]>> fetchMessages(long startOffset, long endOffset, int timeoutMillis) {
     if (LOGGER.isDebugEnabled()) {
       LOGGER.debug("poll consumer: {}, startOffset: {}, endOffset:{} timeout: {}ms", _topicPartition, startOffset,
           endOffset, timeoutMillis);
     }
-    LOGGER.warn("poll consumer: {}, startOffset: {}, endOffset:{} timeout: {}ms", _topicPartition, startOffset,
-        endOffset, timeoutMillis);
     _consumer.seek(_topicPartition, startOffset);
     ConsumerRecords<String, Bytes> consumerRecords = _consumer.poll(Duration.ofMillis(timeoutMillis));
     List<ConsumerRecord<String, Bytes>> messageAndOffsets = consumerRecords.records(_topicPartition);
-    List<StreamMessage> filtered = new ArrayList<>(messageAndOffsets.size());
+    List<StreamMessage<byte[]>> filtered = new ArrayList<>(messageAndOffsets.size());
     long lastOffset = startOffset;
     for (ConsumerRecord<String, Bytes> messageAndOffset : messageAndOffsets) {
       String key = messageAndOffset.key();
@@ -73,8 +71,7 @@ public class KafkaPartitionLevelConsumer extends KafkaPartitionLevelConnectionHa
       if (offset >= startOffset & (endOffset > offset | endOffset == -1)) {
         if (message != null) {
           StreamMessageMetadata rowMetadata = (StreamMessageMetadata) _kafkaMetadataExtractor.extract(messageAndOffset);
-          filtered.add(
-              new KafkaStreamMessage(keyBytes, message.get(), rowMetadata));
+          filtered.add(new KafkaStreamMessage(keyBytes, message.get(), rowMetadata));
         } else if (LOGGER.isDebugEnabled()) {
           LOGGER.debug("tombstone message at offset {}", offset);
         }

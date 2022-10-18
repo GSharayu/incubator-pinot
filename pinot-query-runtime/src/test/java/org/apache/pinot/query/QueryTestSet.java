@@ -30,6 +30,8 @@ public class QueryTestSet {
         new Object[]{"SELECT * FROM b ORDER BY col1, col2 DESC LIMIT 3"},
         new Object[]{"SELECT * FROM a ORDER BY col1, ts LIMIT 10"},
         new Object[]{"SELECT * FROM a ORDER BY col1 LIMIT 20"},
+        new Object[]{"SELECT * FROM a ORDER BY col1, ts LIMIT 1, 2"},
+        new Object[]{"SELECT * FROM a ORDER BY col1, ts LIMIT 2 OFFSET 1"},
 
         // No match filter
         new Object[]{"SELECT * FROM b WHERE col3 < 0.5"},
@@ -93,6 +95,11 @@ public class QueryTestSet {
             + " WHERE a.col1 IN ('foo') AND b.col2 NOT IN ('')"},
 
         // Range conditions with continuous and non-continuous range.
+        // Calcite default compilation will convert multiple `=` and `<>` into range IN and NOT IN search predicates.
+        new Object[]{"SELECT a.col1, SUM(CASE WHEN a.col2 = 'foo' OR a.col2 = 'alice' THEN 1 ELSE 0 END) AS match_sum, "
+            + " SUM(CASE WHEN a.col2 <> 'foo' AND a.col2 <> 'alice' THEN 1 ELSE 0 END) as unmatch_sum "
+            + " FROM a WHERE a.ts >= 1600000000 GROUP BY a.col1"},
+
         new Object[]{"SELECT a.col1, b.col2 FROM a JOIN b ON a.col1 = b.col1 "
             + " WHERE a.col3 IN (1, 2, 3) OR (a.col3 > 10 AND a.col3 < 50)"},
 
@@ -188,6 +195,9 @@ public class QueryTestSet {
         //   - distinct value done via GROUP BY with empty expr aggregation list.
         new Object[]{"SELECT a.col2, a.col3 FROM a JOIN b ON a.col1 = b.col1 "
             + " WHERE b.col3 > 0 GROUP BY a.col2, a.col3"},
+        new Object[]{"SELECT col3 FROM a GROUP BY col3, col1"},
+        new Object[]{"SELECT col1 FROM a GROUP BY col3, col1"},
+        new Object[]{"SELECT AVG(col3) FROM (SELECT col1, col3 FROM a WHERE col3 > 1 GROUP BY col1, col3)"},
 
         // Test optimized constant literal.
         new Object[]{"SELECT col1 FROM a WHERE col3 > 0 AND col3 < -5"},

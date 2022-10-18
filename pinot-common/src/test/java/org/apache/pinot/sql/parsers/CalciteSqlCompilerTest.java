@@ -301,7 +301,7 @@ public class CalciteSqlCompilerTest {
       Assert.assertEquals(eqOperands.get(1).getLiteral(), Literal.boolValue(true));
       eqOperands = operands.get(1).getFunctionCall().getOperands();
       Assert.assertEquals(eqOperands.get(0).getIdentifier().getName(), "f");
-      Assert.assertEquals(eqOperands.get(1).getLiteral(), Literal.stringValue("true"));
+      Assert.assertEquals(eqOperands.get(1).getLiteral(), Literal.boolValue(true));
     }
 
     {
@@ -324,7 +324,7 @@ public class CalciteSqlCompilerTest {
       Assert.assertEquals(operands.get(0).getFunctionCall().getOperator(), FilterKind.EQUALS.name());
       List<Expression> eqOperands = operands.get(0).getFunctionCall().getOperands();
       Assert.assertEquals(eqOperands.get(0).getFunctionCall().getOperator(), "startswith");
-      Assert.assertEquals(eqOperands.get(1).getLiteral(), Literal.stringValue("true"));
+      Assert.assertEquals(eqOperands.get(1).getLiteral(), Literal.boolValue(true));
 
       Assert.assertEquals(operands.get(1).getFunctionCall().getOperator(), FilterKind.EQUALS.name());
       eqOperands = operands.get(1).getFunctionCall().getOperands();
@@ -343,7 +343,7 @@ public class CalciteSqlCompilerTest {
       Assert.assertEquals(operands.get(0).getFunctionCall().getOperator(), FilterKind.EQUALS.name());
       List<Expression> eqOperands = operands.get(0).getFunctionCall().getOperands();
       Assert.assertEquals(eqOperands.get(0).getFunctionCall().getOperator(), "startswith");
-      Assert.assertEquals(eqOperands.get(1).getLiteral(), Literal.stringValue("true"));
+      Assert.assertEquals(eqOperands.get(1).getLiteral(), Literal.boolValue(true));
 
       Assert.assertEquals(operands.get(1).getFunctionCall().getOperator(), FilterKind.EQUALS.name());
       eqOperands = operands.get(1).getFunctionCall().getOperands();
@@ -358,7 +358,7 @@ public class CalciteSqlCompilerTest {
       Assert.assertEquals(operands.get(3).getFunctionCall().getOperator(), FilterKind.EQUALS.name());
       eqOperands = operands.get(3).getFunctionCall().getOperands();
       Assert.assertEquals(eqOperands.get(0).getIdentifier().getName(), "d");
-      Assert.assertEquals(eqOperands.get(1).getLiteral(), Literal.stringValue("true"));
+      Assert.assertEquals(eqOperands.get(1).getLiteral(), Literal.boolValue(true));
     }
   }
 
@@ -1812,7 +1812,7 @@ public class CalciteSqlCompilerTest {
   }
 
   @Test
-  public void testOrdinalsQueryRewriteWithDistinctOrderby() {
+  public void testOrdinalsQueryRewriteWithDistinctOrderBy() {
     String query =
         "SELECT baseballStats.playerName AS playerName FROM baseballStats GROUP BY baseballStats.playerName ORDER BY "
             + "1 ASC";
@@ -1820,7 +1820,7 @@ public class CalciteSqlCompilerTest {
     Assert.assertEquals(
         pinotQuery.getSelectList().get(0).getFunctionCall().getOperands().get(0).getFunctionCall().getOperands().get(0)
             .getIdentifier().getName(), "baseballStats.playerName");
-    Assert.assertTrue(pinotQuery.getGroupByList().isEmpty());
+    Assert.assertNull(pinotQuery.getGroupByList());
     Assert.assertEquals(
         pinotQuery.getOrderByList().get(0).getFunctionCall().getOperands().get(0).getIdentifier().getName(),
         "baseballStats.playerName");
@@ -1937,19 +1937,16 @@ public class CalciteSqlCompilerTest {
     Assert.assertEquals(encodedBase64, "aGVsbG8h");
     Assert.assertEquals(decodedBase64, "hello!");
 
-    query =
-        "select toBase64(toUtf8(upper('hello!'))), fromUtf8(fromBase64(toBase64(toUtf8(upper('hello!'))))) from "
-            + "mytable";
+    query = "select toBase64(toUtf8(upper('hello!'))), fromUtf8(fromBase64(toBase64(toUtf8(upper('hello!'))))) from "
+        + "mytable";
     pinotQuery = CalciteSqlParser.compileToPinotQuery(query);
     encodedBase64 = pinotQuery.getSelectList().get(0).getLiteral().getStringValue();
     decodedBase64 = pinotQuery.getSelectList().get(1).getLiteral().getStringValue();
     Assert.assertEquals(encodedBase64, "SEVMTE8h");
     Assert.assertEquals(decodedBase64, "HELLO!");
 
-    query =
-        "select reverse(fromUtf8(fromBase64(toBase64(toUtf8(upper('hello!')))))) from mytable where fromUtf8"
-            + "(fromBase64(toBase64(toUtf8(upper('hello!')))))"
-            + " = bar";
+    query = "select reverse(fromUtf8(fromBase64(toBase64(toUtf8(upper('hello!')))))) from mytable where "
+        + "fromUtf8(fromBase64(toBase64(toUtf8(upper('hello!'))))) = bar";
     pinotQuery = CalciteSqlParser.compileToPinotQuery(query);
     String arg1 = pinotQuery.getSelectList().get(0).getLiteral().getStringValue();
     String leftOp =
@@ -2217,7 +2214,7 @@ public class CalciteSqlCompilerTest {
     Assert.assertEquals(
         pinotQuery.getSelectList().get(0).getFunctionCall().getOperands().get(1).getIdentifier().getName(), "col2");
 
-    query = "SELECT col1+col2*5 FROM foo GROUP BY col1, col2";
+    query = "SELECT col1+col2*5 FROM foo GROUP BY col1+col2*5";
     pinotQuery = CalciteSqlParser.compileToPinotQuery(query);
     Assert.assertEquals(pinotQuery.getSelectListSize(), 1);
     Assert.assertEquals(pinotQuery.getSelectList().get(0).getFunctionCall().getOperator().toUpperCase(), "DISTINCT");
@@ -2237,7 +2234,7 @@ public class CalciteSqlCompilerTest {
         pinotQuery.getSelectList().get(0).getFunctionCall().getOperands().get(0).getFunctionCall().getOperands().get(1)
             .getFunctionCall().getOperands().get(1).getLiteral().getLongValue(), 5L);
 
-    query = "SELECT col1+col2*5 AS col3 FROM foo GROUP BY col1, col2";
+    query = "SELECT col1+col2*5 AS col3 FROM foo GROUP BY col3";
     pinotQuery = CalciteSqlParser.compileToPinotQuery(query);
     Assert.assertEquals(pinotQuery.getSelectListSize(), 1);
     Assert.assertEquals(pinotQuery.getSelectList().get(0).getFunctionCall().getOperator().toUpperCase(), "DISTINCT");
@@ -2265,17 +2262,16 @@ public class CalciteSqlCompilerTest {
         5L);
   }
 
-  @Test(expectedExceptions = SqlCompilationException.class)
+  @Test
   public void testInvalidNonAggregationGroupBy() {
-    // Not support Aggregation functions in case statements.
-    try {
-      CalciteSqlParser.compileToPinotQuery("SELECT col1+col2 FROM foo GROUP BY col1");
-    } catch (SqlCompilationException e) {
-      Assert.assertEquals(e.getMessage(),
-          "For non-aggregation group by query, all the identifiers in select clause should be in groupBys. Found "
-              + "identifier: [col2]");
-      throw e;
-    }
+    Assert.assertThrows(SqlCompilationException.class,
+        () -> CalciteSqlParser.compileToPinotQuery("SELECT col1 FROM foo GROUP BY col1, col2"));
+    Assert.assertThrows(SqlCompilationException.class,
+        () -> CalciteSqlParser.compileToPinotQuery("SELECT col1, col2 FROM foo GROUP BY col1"));
+    Assert.assertThrows(SqlCompilationException.class,
+        () -> CalciteSqlParser.compileToPinotQuery("SELECT col1 + col2 FROM foo GROUP BY col1"));
+    Assert.assertThrows(SqlCompilationException.class,
+        () -> CalciteSqlParser.compileToPinotQuery("SELECT col1+col2 FROM foo GROUP BY col1,col2"));
   }
 
   @Test
@@ -2325,7 +2321,7 @@ public class CalciteSqlCompilerTest {
       Assert.assertEquals(operands.get(3).getFunctionCall().getOperator(), FilterKind.EQUALS.name());
       eqOperands = operands.get(3).getFunctionCall().getOperands();
       Assert.assertEquals(eqOperands.get(0).getIdentifier(), new Identifier("col4"));
-      Assert.assertEquals(eqOperands.get(1).getLiteral(), Literal.stringValue("true"));
+      Assert.assertEquals(eqOperands.get(1).getLiteral(), Literal.boolValue(true));
     }
     {
       String query = "SELECT * FROM foo WHERE col1 <= 0 OR col2 <= 0 OR (col3 <= 0 OR col4 <= 0)";
@@ -2680,7 +2676,6 @@ public class CalciteSqlCompilerTest {
     Assert.assertTrue(sqlNodeAndOptions.getSqlNode() instanceof SqlInsertFromFile);
     Assert.assertEquals(sqlNodeAndOptions.getSqlType(), PinotSqlType.DML);
   }
-
 
   @Test
   public void shouldParseBasicAtTimeZoneExtension() {

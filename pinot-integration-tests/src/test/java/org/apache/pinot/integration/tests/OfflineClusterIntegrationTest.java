@@ -2299,16 +2299,12 @@ public class OfflineClusterIntegrationTest extends BaseClusterIntegrationTestSet
     h2Query = "SELECT Carrier, DestAirportID, DestCityName FROM mytable GROUP BY Carrier, DestAirportID, DestCityName";
     testQuery(pinotQuery, h2Query);
 
-    pinotQuery = "SELECT ArrTime-DepTime FROM mytable GROUP BY ArrTime, DepTime LIMIT 1000000";
-    h2Query = "SELECT ArrTime-DepTime FROM mytable GROUP BY ArrTime, DepTime";
+    pinotQuery = "SELECT ArrTime-DepTime FROM mytable GROUP BY ArrTime-DepTime LIMIT 1000000";
+    h2Query = "SELECT ArrTime-DepTime FROM mytable GROUP BY ArrTime-DepTime";
     testQuery(pinotQuery, h2Query);
 
-    pinotQuery = "SELECT ArrTime-DepTime,ArrTime/3,DepTime*2 FROM mytable GROUP BY ArrTime, DepTime LIMIT 1000000";
-    h2Query = "SELECT ArrTime-DepTime,ArrTime/3,DepTime*2 FROM mytable GROUP BY ArrTime, DepTime";
-    testQuery(pinotQuery, h2Query);
-
-    pinotQuery = "SELECT ArrTime+DepTime FROM mytable GROUP BY ArrTime + DepTime LIMIT 1000000";
-    h2Query = "SELECT ArrTime+DepTime FROM mytable GROUP BY ArrTime + DepTime";
+    pinotQuery = "SELECT ArrTime+DepTime AS A FROM mytable GROUP BY A LIMIT 1000000";
+    h2Query = "SELECT ArrTime+DepTime AS A FROM mytable GROUP BY A";
     testQuery(pinotQuery, h2Query);
   }
 
@@ -2791,5 +2787,38 @@ public class OfflineClusterIntegrationTest extends BaseClusterIntegrationTestSet
     assertEquals(jobStatus.get("metadata").get("jobId").asText(), reloadJobId);
     assertEquals(jobStatus.get("metadata").get("jobType").asText(), "RELOAD_ALL_SEGMENTS");
     return jobStatus.get("totalSegmentCount").asInt() == jobStatus.get("successCount").asInt();
+  }
+
+  @Test
+  public void testBooleanLiteralsFunc()
+      throws Exception {
+    // Test boolean equal true case.
+    String sqlQuery = "SELECT (true = true) = true FROM mytable where true = true";
+    JsonNode response = postQuery(sqlQuery, _brokerBaseApiUrl);
+    JsonNode rows = response.get("resultTable").get("rows");
+    assertTrue(response.get("exceptions").isEmpty());
+    assertEquals(rows.size(), 1);
+    assertTrue(rows.get(0).get(0).asBoolean());
+    // Test boolean equal false case.
+    sqlQuery = "SELECT (true = true) = false FROM mytable";
+    response = postQuery(sqlQuery, _brokerBaseApiUrl);
+    rows = response.get("resultTable").get("rows");
+    assertTrue(response.get("exceptions").isEmpty());
+    assertEquals(rows.size(), 1);
+    assertFalse(rows.get(0).get(0).asBoolean());
+    // Test boolean not equal true case.
+    sqlQuery = "SELECT true != false FROM mytable";
+    response = postQuery(sqlQuery, _brokerBaseApiUrl);
+    rows = response.get("resultTable").get("rows");
+    assertTrue(response.get("exceptions").isEmpty());
+    assertEquals(rows.size(), 1);
+    assertTrue(rows.get(0).get(0).asBoolean());
+    // Test boolean not equal false case.
+    sqlQuery = "SELECT true != true FROM mytable";
+    response = postQuery(sqlQuery, _brokerBaseApiUrl);
+    rows = response.get("resultTable").get("rows");
+    assertTrue(response.get("exceptions").isEmpty());
+    assertEquals(rows.size(), 1);
+    assertFalse(rows.get(0).get(0).asBoolean());
   }
 }

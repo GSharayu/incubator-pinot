@@ -24,10 +24,10 @@ import java.util.HashMap;
 import java.util.List;
 import javax.annotation.Nullable;
 import org.apache.calcite.rel.core.JoinRelType;
+import org.apache.pinot.common.datablock.BaseDataBlock;
+import org.apache.pinot.common.datablock.DataBlockUtils;
 import org.apache.pinot.common.utils.DataSchema;
 import org.apache.pinot.core.common.Operator;
-import org.apache.pinot.core.common.datablock.BaseDataBlock;
-import org.apache.pinot.core.common.datablock.DataBlockUtils;
 import org.apache.pinot.core.operator.BaseOperator;
 import org.apache.pinot.query.planner.logical.RexExpression;
 import org.apache.pinot.query.planner.partitioning.KeySelector;
@@ -49,8 +49,8 @@ public class HashJoinOperator extends BaseOperator<TransferableBlock> {
   private static final String EXPLAIN_NAME = "BROADCAST_JOIN";
 
   private final HashMap<Integer, List<Object[]>> _broadcastHashTable;
-  private final BaseOperator<TransferableBlock> _leftTableOperator;
-  private final BaseOperator<TransferableBlock> _rightTableOperator;
+  private final Operator<TransferableBlock> _leftTableOperator;
+  private final Operator<TransferableBlock> _rightTableOperator;
   private final JoinRelType _joinType;
   private final DataSchema _resultSchema;
   private final DataSchema _leftTableSchema;
@@ -62,8 +62,8 @@ public class HashJoinOperator extends BaseOperator<TransferableBlock> {
   private KeySelector<Object[], Object[]> _leftKeySelector;
   private KeySelector<Object[], Object[]> _rightKeySelector;
 
-  public HashJoinOperator(BaseOperator<TransferableBlock> leftTableOperator, DataSchema leftSchema,
-      BaseOperator<TransferableBlock> rightTableOperator, DataSchema rightSchema, DataSchema outputSchema,
+  public HashJoinOperator(Operator<TransferableBlock> leftTableOperator, DataSchema leftSchema,
+      Operator<TransferableBlock> rightTableOperator, DataSchema rightSchema, DataSchema outputSchema,
       JoinNode.JoinKeys joinKeys, List<RexExpression> joinClauses, JoinRelType joinType) {
     _leftKeySelector = joinKeys.getLeftJoinKeySelector();
     _rightKeySelector = joinKeys.getRightJoinKeySelector();

@@ -51,4 +51,14 @@ public class ValueNode extends AbstractStageNode {
   public List<List<RexExpression>> getLiteralRows() {
     return _literalRows;
   }
+
+  @Override
+  public String explain() {
+    return "LITERAL";
+  }
+
+  @Override
+  public <T, C> T visit(StageNodeVisitor<T, C> visitor, C context) {
+    return visitor.visitValue(this, context);
+  }
 }

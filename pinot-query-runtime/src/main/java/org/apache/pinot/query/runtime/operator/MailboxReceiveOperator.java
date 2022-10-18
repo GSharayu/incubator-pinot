@@ -24,13 +24,13 @@ import java.util.Collections;
 import java.util.List;
 import javax.annotation.Nullable;
 import org.apache.calcite.rel.RelDistribution;
+import org.apache.pinot.common.datablock.BaseDataBlock;
+import org.apache.pinot.common.datablock.DataBlockUtils;
+import org.apache.pinot.common.datablock.MetadataBlock;
 import org.apache.pinot.common.exception.QueryException;
 import org.apache.pinot.common.proto.Mailbox;
 import org.apache.pinot.common.utils.DataSchema;
 import org.apache.pinot.core.common.Operator;
-import org.apache.pinot.core.common.datablock.BaseDataBlock;
-import org.apache.pinot.core.common.datablock.DataBlockUtils;
-import org.apache.pinot.core.common.datablock.MetadataBlock;
 import org.apache.pinot.core.operator.BaseOperator;
 import org.apache.pinot.core.transport.ServerInstance;
 import org.apache.pinot.query.mailbox.MailboxService;
@@ -79,7 +79,14 @@ public class MailboxReceiveOperator extends BaseOperator<TransferableBlock> {
           singletonInstance = serverInstance;
         }
       }
-      _sendingStageInstances = Collections.singletonList(singletonInstance);
+
+      if (singletonInstance == null) {
+        // TODO: fix WorkerManager assignment, this should not happen if we properly assign workers.
+        // see: https://github.com/apache/pinot/issues/9592
+        _sendingStageInstances = Collections.emptyList();
+      } else {
+        _sendingStageInstances = Collections.singletonList(singletonInstance);
+      }
     } else {
       _sendingStageInstances = sendingStageInstances;
     }
