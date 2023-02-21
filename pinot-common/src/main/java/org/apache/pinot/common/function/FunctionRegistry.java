@@ -72,10 +72,10 @@ public class FunctionRegistry {
         boolean nullableParameters = scalarFunction.nullableParameters();
         if (scalarFunctionNames.length > 0) {
           for (String name : scalarFunctionNames) {
-            FunctionRegistry.registerFunction(name, method, nullableParameters);
+            FunctionRegistry.registerFunction(name, method, nullableParameters, scalarFunction.isPlaceholder());
           }
         } else {
-          FunctionRegistry.registerFunction(method, nullableParameters);
+          FunctionRegistry.registerFunction(method, nullableParameters, scalarFunction.isPlaceholder());
         }
       }
     }
@@ -94,24 +94,34 @@ public class FunctionRegistry {
   /**
    * Registers a method with the name of the method.
    */
-  public static void registerFunction(Method method, boolean nullableParameters) {
-    registerFunction(method.getName(), method, nullableParameters);
-
-    // Calcite ScalarFunctionImpl doesn't allow customized named functions. TODO: fix me.
-    if (method.getAnnotation(Deprecated.class) == null) {
-      FUNCTION_MAP.put(method.getName(), ScalarFunctionImpl.create(method));
-    }
+  public static void registerFunction(Method method, boolean nullableParameters, boolean isPlaceholder) {
+    registerFunction(method.getName(), method, nullableParameters, isPlaceholder);
   }
 
   /**
    * Registers a method with the given function name.
    */
-  public static void registerFunction(String functionName, Method method, boolean nullableParameters) {
+  public static void registerFunction(String functionName, Method method, boolean nullableParameters,
+      boolean isPlaceholder) {
+    if (!isPlaceholder) {
+      registerFunctionInfoMap(functionName, method, nullableParameters);
+    }
+    registerCalciteNamedFunctionMap(functionName, method, nullableParameters);
+  }
+
+  private static void registerFunctionInfoMap(String functionName, Method method, boolean nullableParameters) {
     FunctionInfo functionInfo = new FunctionInfo(method, method.getDeclaringClass(), nullableParameters);
     String canonicalName = canonicalize(functionName);
     Map<Integer, FunctionInfo> functionInfoMap = FUNCTION_INFO_MAP.computeIfAbsent(canonicalName, k -> new HashMap<>());
-    Preconditions.checkState(functionInfoMap.put(method.getParameterCount(), functionInfo) == null,
+    FunctionInfo existFunctionInfo = functionInfoMap.put(method.getParameterCount(), functionInfo);
+    Preconditions.checkState(existFunctionInfo == null || existFunctionInfo.getMethod() == functionInfo.getMethod(),
         "Function: %s with %s parameters is already registered", functionName, method.getParameterCount());
+  }
+
+  private static void registerCalciteNamedFunctionMap(String functionName, Method method, boolean nullableParameters) {
+    if (method.getAnnotation(Deprecated.class) == null) {
+      FUNCTION_MAP.put(functionName, ScalarFunctionImpl.create(method));
+    }
   }
 
   public static Map<String, List<Function>> getRegisteredCalciteFunctionMap() {
@@ -146,5 +156,54 @@ public class FunctionRegistry {
 
   private static String canonicalize(String functionName) {
     return StringUtils.remove(functionName, '_').toLowerCase();
+  }
+
+  /**
+   * Placeholders for scalar function, they register and represents the signature for transform and filter predicate
+   * so that v2 engine can understand and plan them correctly.
+   */
+  private static class PlaceholderScalarFunctions {
+
+    /**
+     * Noted that {@code dateTimeConvert} with String as first input is actually supported.
+     *
+     * @see org.apache.pinot.common.function.scalar.DateTimeConvert#dateTimeConvert(String, String, String, String)
+     */
+    @ScalarFunction(names = {"dateTimeConvert", "date_time_convert"}, isPlaceholder = true)
+    public static String dateTimeConvert(long timeValueNumeric, String inputFormatStr, String outputFormatStr,
+        String outputGranularityStr) {
+      throw new UnsupportedOperationException("Placeholder scalar function, should not reach here");
+    }
+
+    @ScalarFunction(names = {"jsonExtractScalar", "json_extract_scalar"}, isPlaceholder = true)
+    public static Object jsonExtractScalar(String jsonFieldName, String jsonPath, String resultsType) {
+      throw new UnsupportedOperationException("Placeholder scalar function, should not reach here");
+    }
+
+    @ScalarFunction(names = {"jsonExtractScalar", "json_extract_scalar"}, isPlaceholder = true)
+    public static Object jsonExtractScalar(String jsonFieldName, String jsonPath, String resultsType,
+        Object defaultValue) {
+      throw new UnsupportedOperationException("Placeholder scalar function, should not reach here");
+    }
+
+    @ScalarFunction(names = {"jsonExtractKey", "json_extract_key"}, isPlaceholder = true)
+    public static String jsonExtractKey(String jsonFieldName, String jsonPath) {
+      throw new UnsupportedOperationException("Placeholder scalar function, should not reach here");
+    }
+
+    @ScalarFunction(names = {"textContains", "text_contains"}, isPlaceholder = true)
+    public static boolean textContains(String text, String pattern) {
+      throw new UnsupportedOperationException("Placeholder scalar function, should not reach here");
+    }
+
+    @ScalarFunction(names = {"textMatch", "text_match"}, isPlaceholder = true)
+    public static boolean textMatch(String text, String pattern) {
+      throw new UnsupportedOperationException("Placeholder scalar function, should not reach here");
+    }
+
+    @ScalarFunction(names = {"jsonMatch", "json_match"}, isPlaceholder = true)
+    public static boolean jsonMatch(String text, String pattern) {
+      throw new UnsupportedOperationException("Placeholder scalar function, should not reach here");
+    }
   }
 }

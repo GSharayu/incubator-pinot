@@ -18,9 +18,14 @@
  */
 package org.apache.pinot.query.runtime.plan;
 
+import com.google.common.collect.ImmutableList;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
+import org.apache.pinot.query.mailbox.MailboxIdentifier;
 import org.apache.pinot.query.mailbox.MailboxService;
 import org.apache.pinot.query.planner.StageMetadata;
+import org.apache.pinot.query.routing.VirtualServerAddress;
 import org.apache.pinot.query.runtime.blocks.TransferableBlock;
 
 
@@ -28,17 +33,19 @@ public class PlanRequestContext {
   protected final MailboxService<TransferableBlock> _mailboxService;
   protected final long _requestId;
   protected final int _stageId;
-  protected final String _hostName;
-  protected final int _port;
+  private final long _timeoutMs;
+  protected final VirtualServerAddress _server;
   protected final Map<Integer, StageMetadata> _metadataMap;
+  protected final List<MailboxIdentifier> _receivingMailboxes = new ArrayList<>();
+
 
   public PlanRequestContext(MailboxService<TransferableBlock> mailboxService, long requestId, int stageId,
-      String hostName, int port, Map<Integer, StageMetadata> metadataMap) {
+      long timeoutMs, VirtualServerAddress server, Map<Integer, StageMetadata> metadataMap) {
     _mailboxService = mailboxService;
     _requestId = requestId;
     _stageId = stageId;
-    _hostName = hostName;
-    _port = port;
+    _timeoutMs = timeoutMs;
+    _server = server;
     _metadataMap = metadataMap;
   }
 
@@ -50,12 +57,12 @@ public class PlanRequestContext {
     return _stageId;
   }
 
-  public String getHostName() {
-    return _hostName;
+  public long getTimeoutMs() {
+    return _timeoutMs;
   }
 
-  public int getPort() {
-    return _port;
+  public VirtualServerAddress getServer() {
+    return _server;
   }
 
   public Map<Integer, StageMetadata> getMetadataMap() {
@@ -64,5 +71,13 @@ public class PlanRequestContext {
 
   public MailboxService<TransferableBlock> getMailboxService() {
     return _mailboxService;
+  }
+
+  public void addReceivingMailboxes(List<MailboxIdentifier> ids) {
+    _receivingMailboxes.addAll(ids);
+  }
+
+  public List<MailboxIdentifier> getReceivingMailboxes() {
+    return ImmutableList.copyOf(_receivingMailboxes);
   }
 }

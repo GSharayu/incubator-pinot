@@ -18,10 +18,11 @@
  */
 package org.apache.pinot.query.runtime.operator;
 
-import com.google.common.base.Suppliers;
-import java.util.function.Supplier;
-import org.apache.pinot.common.request.context.ThreadTimer;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Set;
 import org.apache.pinot.core.common.Operator;
+import org.apache.pinot.query.mailbox.MailboxIdentifier;
 import org.apache.pinot.query.runtime.blocks.TransferableBlock;
 
 
@@ -29,25 +30,50 @@ import org.apache.pinot.query.runtime.blocks.TransferableBlock;
  * An {@code OpChain} represents a chain of operators that are separated
  * by send/receive stages.
  */
-public class OpChain {
+public class OpChain implements AutoCloseable {
+  private final MultiStageOperator _root;
+  private final Set<MailboxIdentifier> _receivingMailbox;
+  private final OpChainStats _stats;
+  private final String _id;
 
-  private final Operator<TransferableBlock> _root;
-  // TODO: build timers that are partial-execution aware
-  private final Supplier<ThreadTimer> _timer;
-
-  public OpChain(Operator<TransferableBlock> root) {
+  public OpChain(MultiStageOperator root, List<MailboxIdentifier> receivingMailboxes, long requestId, int stageId) {
     _root = root;
-
-    // use memoized supplier so that the timing doesn't start until the
-    // first time we get the timer
-    _timer = Suppliers.memoize(ThreadTimer::new)::get;
+    _receivingMailbox = new HashSet<>(receivingMailboxes);
+    _id = String.format("%s_%s", requestId, stageId);
+    _stats = new OpChainStats(_id);
   }
 
   public Operator<TransferableBlock> getRoot() {
     return _root;
   }
 
-  public ThreadTimer getAndStartTimer() {
-    return _timer.get();
+  public Set<MailboxIdentifier> getReceivingMailbox() {
+    return _receivingMailbox;
+  }
+
+  // TODO: Move OperatorStats here.
+  public OpChainStats getStats() {
+    return _stats;
+  }
+
+  @Override
+  public String toString() {
+    return "OpChain{" + _id + "}";
+  }
+
+  /**
+   * close() is called when we finish execution successfully.
+   */
+  @Override
+  public void close() {
+    _root.close();
+  }
+
+  /**
+   * cancel() is called when execution runs into error.
+   * @param e
+   */
+  public void cancel(Throwable e) {
+    _root.cancel(e);
   }
 }

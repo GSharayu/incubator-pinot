@@ -35,7 +35,7 @@ import TableContainer from '@material-ui/core/TableContainer';
 import TableHead from '@material-ui/core/TableHead';
 import TableRow from '@material-ui/core/TableRow';
 import { TablePagination, Tooltip } from '@material-ui/core';
-import { TableData } from 'Models';
+import {TableData, TableSortFunction} from 'Models';
 import IconButton from '@material-ui/core/IconButton';
 import FirstPageIcon from '@material-ui/icons/FirstPage';
 import KeyboardArrowLeft from '@material-ui/icons/KeyboardArrowLeft';
@@ -47,6 +47,7 @@ import { Link } from 'react-router-dom';
 import Chip from '@material-ui/core/Chip';
 import { get, has, orderBy } from 'lodash';
 import app_state from '../app_state';
+import { sortBytes, sortNumberOfSegments } from '../utils/SortFunctions'
 import Utils from '../utils/Utils';
 import TableToolbar from './TableToolbar';
 import SimpleAccordion from './SimpleAccordion';
@@ -72,6 +73,15 @@ type Props = {
   },
   tooltipData?: string[]
 };
+
+// These sort functions are applied to any columns with these names. Otherwise, we just
+// sort on the raw data. Ideally users of this class would pass in custom sort functions
+// for their columns, but this pattern already existed, so we're at least making the
+// improvement to pull this out to a common variable.
+let staticSortFunctions: Map<string, TableSortFunction> = new Map()
+staticSortFunctions.set("Number of Segments", sortNumberOfSegments);
+staticSortFunctions.set("Estimated Size", sortBytes);
+staticSortFunctions.set("Reported Size", sortBytes);
 
 const StyledTableRow = withStyles((theme) =>
   createStyles({
@@ -271,7 +281,7 @@ export default function CustomizedTables({
   accordionToggleObject,
   tooltipData
 }: Props) {
-  // Separate the initial and final data into two separte state variables.
+  // Separate the initial and final data into two separated state variables.
   // This way we can filter and sort the data without affecting the original data.
   // If the component receives new data, we can simply set the new data to the initial data,
   // and the filters and sorts will be applied to the new data.
@@ -339,7 +349,7 @@ export default function CustomizedTables({
   }, [search, timeoutId, filterSearchResults]);
 
   const styleCell = (str: string) => {
-    if (str === 'Good' || str.toLowerCase() === 'online' || str.toLowerCase() === 'alive' || str.toLowerCase() === 'true') {
+    if (str.toLowerCase() === 'good' || str.toLowerCase() === 'online' || str.toLowerCase() === 'alive' || str.toLowerCase() === 'true') {
       return (
         <StyledChip
           label={str}
@@ -348,7 +358,7 @@ export default function CustomizedTables({
         />
       );
     }
-    if (str === 'Bad' || str.toLowerCase() === 'offline' || str.toLowerCase() === 'dead' || str.toLowerCase() === 'false') {
+    if (str.toLocaleLowerCase() === 'bad' || str.toLowerCase() === 'offline' || str.toLowerCase() === 'dead' || str.toLowerCase() === 'false') {
       return (
         <StyledChip
           label={str}
@@ -357,7 +367,7 @@ export default function CustomizedTables({
         />
       );
     }
-    if (str.toLowerCase() === 'consuming') {
+    if (str.toLowerCase() === 'consuming' || str.toLocaleLowerCase() === "partial" || str.toLocaleLowerCase() === "updating" ) {
       return (
         <StyledChip
           label={str}
@@ -383,6 +393,9 @@ export default function CustomizedTables({
           variant="outlined"
         />
       );
+    }
+    if (str.search('\n') !== -1) {
+      return (<pre>{str.toString()}</pre>);
     }
     return (<span>{str.toString()}</span>);
   };
@@ -464,13 +477,8 @@ export default function CustomizedTables({
                     className={classes.head}
                     key={index}
                     onClick={() => {
-                      if(column === 'Number of Segments'){
-                        const data = finalData.sort((a,b)=>{
-                          const aSegmentInt = parseInt(a[column+app_state.columnNameSeparator+index]);
-                          const bSegmentInt = parseInt(b[column+app_state.columnNameSeparator+index]);
-                          const result = order ? (aSegmentInt > bSegmentInt) : (aSegmentInt < bSegmentInt);
-                          return result ? 1 : -1;
-                        });
+                      if (staticSortFunctions.has(column)) {
+                        finalData.sort((a, b) => staticSortFunctions.get(column)(a, b, column, index, order));
                         setFinalData(finalData);
                       } else {
                         setFinalData(orderBy(finalData, column+app_state.columnNameSeparator+index, order ? 'asc' : 'desc'));

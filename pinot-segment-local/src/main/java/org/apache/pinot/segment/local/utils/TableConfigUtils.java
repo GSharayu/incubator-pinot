@@ -31,6 +31,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
+import javax.annotation.Nonnull;
 import javax.annotation.Nullable;
 import org.apache.commons.collections.CollectionUtils;
 import org.apache.commons.collections.MapUtils;
@@ -100,6 +101,9 @@ public final class TableConfigUtils {
   private static final EnumSet<AggregationFunctionType> SUPPORTED_INGESTION_AGGREGATIONS =
       EnumSet.of(AggregationFunctionType.SUM, AggregationFunctionType.MIN, AggregationFunctionType.MAX,
           AggregationFunctionType.COUNT);
+  private static final Set<String> UPSERT_DEDUP_ALLOWED_ROUTING_STRATEGIES =
+      ImmutableSet.of(RoutingConfig.STRICT_REPLICA_GROUP_INSTANCE_SELECTOR_TYPE,
+          RoutingConfig.MULTI_STAGE_REPLICA_GROUP_SELECTOR_TYPE);
 
   /**
    * @see TableConfigUtils#validate(TableConfig, Schema, String, boolean)
@@ -303,12 +307,15 @@ public final class TableConfigUtils {
             "Should not use indexingConfig#getStreamConfigs if ingestionConfig#StreamIngestionConfig is provided");
         List<Map<String, String>> streamConfigMaps = ingestionConfig.getStreamIngestionConfig().getStreamConfigMaps();
         Preconditions.checkState(streamConfigMaps.size() == 1, "Only 1 stream is supported in REALTIME table");
+
+        StreamConfig streamConfig;
         try {
           // Validate that StreamConfig can be created
-          new StreamConfig(tableNameWithType, streamConfigMaps.get(0));
+          streamConfig = new StreamConfig(tableNameWithType, streamConfigMaps.get(0));
         } catch (Exception e) {
           throw new IllegalStateException("Could not create StreamConfig using the streamConfig map", e);
         }
+        validateDecoder(streamConfig);
       }
 
       // Filter config
@@ -459,6 +466,19 @@ public final class TableConfigUtils {
   }
 
   @VisibleForTesting
+  static void validateDecoder(StreamConfig streamConfig) {
+    if (streamConfig.getDecoderClass().equals("org.apache.pinot.plugin.inputformat.protobuf.ProtoBufMessageDecoder")) {
+      // check the existence of the needed decoder props
+      if (!streamConfig.getDecoderProperties().containsKey("stream.kafka.decoder.prop.descriptorFile")) {
+        throw new IllegalStateException("Missing property of descriptorFile for ProtoBufMessageDecoder");
+      }
+      if (!streamConfig.getDecoderProperties().containsKey("stream.kafka.decoder.prop.protoClassName")) {
+        throw new IllegalStateException("Missing property of protoClassName for ProtoBufMessageDecoder");
+      }
+    }
+  }
+
+  @VisibleForTesting
   static void validateTaskConfigs(TableConfig tableConfig, Schema schema) {
     TableTaskConfig taskConfig = tableConfig.getTaskConfig();
     if (taskConfig != null) {
@@ -541,8 +561,7 @@ public final class TableConfigUtils {
         "Upsert/Dedup table must use low-level streaming consumer type");
     // replica group is configured for routing
     Preconditions.checkState(tableConfig.getRoutingConfig() != null
-            && RoutingConfig.STRICT_REPLICA_GROUP_INSTANCE_SELECTOR_TYPE.equalsIgnoreCase(
-            tableConfig.getRoutingConfig().getInstanceSelectorType()),
+            && isRoutingStrategyAllowedForUpsert(tableConfig.getRoutingConfig()),
         "Upsert/Dedup table must use strict replica-group (i.e. strictReplicaGroup) based routing");
 
     // specifically for upsert
@@ -972,6 +991,9 @@ public final class TableConfigUtils {
   }
 
   /**
+   * TODO: After deprecating "replicasPerPartition", we can change this function's behavior to always overwrite
+   * config to "replication" only.
+   *
    * Ensure that the table config has the minimum number of replicas set as per cluster configs.
    * If is doesn't, set the required amount of replication in the table config
    */
@@ -992,7 +1014,7 @@ public final class TableConfigUtils {
     if (verifyReplication) {
       int requestReplication;
       try {
-        requestReplication = segmentsConfig.getReplicationNumber();
+        requestReplication = tableConfig.getReplication();
         if (requestReplication < defaultTableMinReplicas) {
           LOGGER.info("Creating table with minimum replication factor of: {} instead of requested replication: {}",
               defaultTableMinReplicas, requestReplication);
@@ -1004,12 +1026,9 @@ public final class TableConfigUtils {
     }
 
     if (verifyReplicasPerPartition) {
-      String replicasPerPartitionStr = segmentsConfig.getReplicasPerPartition();
-      if (replicasPerPartitionStr == null) {
-        throw new IllegalStateException("Field replicasPerPartition needs to be specified");
-      }
+      int replicasPerPartition;
       try {
-        int replicasPerPartition = Integer.parseInt(replicasPerPartitionStr);
+        replicasPerPartition = tableConfig.getReplication();
         if (replicasPerPartition < defaultTableMinReplicas) {
           LOGGER.info(
               "Creating table with minimum replicasPerPartition of: {} instead of requested replicasPerPartition: {}",
@@ -1017,7 +1036,7 @@ public final class TableConfigUtils {
           segmentsConfig.setReplicasPerPartition(String.valueOf(defaultTableMinReplicas));
         }
       } catch (NumberFormatException e) {
-        throw new IllegalStateException("Invalid value for replicasPerPartition: '" + replicasPerPartitionStr + "'", e);
+        throw new IllegalStateException("Invalid replicasPerPartition number", e);
       }
     }
   }
@@ -1131,5 +1150,10 @@ public final class TableConfigUtils {
       }
     }
     return false;
+  }
+
+  private static boolean isRoutingStrategyAllowedForUpsert(@Nonnull RoutingConfig routingConfig) {
+    String instanceSelectorType = routingConfig.getInstanceSelectorType();
+    return UPSERT_DEDUP_ALLOWED_ROUTING_STRATEGIES.stream().anyMatch(x -> x.equalsIgnoreCase(instanceSelectorType));
   }
 }

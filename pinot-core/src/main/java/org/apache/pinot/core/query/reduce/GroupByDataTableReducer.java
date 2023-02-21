@@ -30,6 +30,8 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
+import org.apache.commons.lang.StringUtils;
+import org.apache.pinot.common.CustomObject;
 import org.apache.pinot.common.datatable.DataTable;
 import org.apache.pinot.common.exception.QueryException;
 import org.apache.pinot.common.metrics.BrokerGauge;
@@ -55,6 +57,10 @@ import org.apache.pinot.core.query.request.context.QueryContext;
 import org.apache.pinot.core.transport.ServerRoutingInstance;
 import org.apache.pinot.core.util.GroupByUtils;
 import org.apache.pinot.core.util.trace.TraceRunnable;
+import org.apache.pinot.spi.accounting.ThreadExecutionContext;
+import org.apache.pinot.spi.accounting.ThreadResourceUsageProvider;
+import org.apache.pinot.spi.exception.EarlyTerminationException;
+import org.apache.pinot.spi.trace.Tracing;
 import org.roaringbitmap.RoaringBitmap;
 
 
@@ -164,6 +170,7 @@ public class GroupByDataTableReducer implements DataTableReducer {
       rows = new ArrayList<>();
       HavingFilterHandler havingFilterHandler =
           new HavingFilterHandler(havingFilter, postAggregationHandler, _queryContext.isNullHandlingEnabled());
+      int processedRows = 0;
       while (rows.size() < limit && sortedIterator.hasNext()) {
         Object[] row = sortedIterator.next().getValues();
         extractFinalAggregationResults(row);
@@ -176,6 +183,8 @@ public class GroupByDataTableReducer implements DataTableReducer {
         if (havingFilterHandler.isMatch(row)) {
           rows.add(row);
         }
+        Tracing.ThreadAccountantOps.sampleAndCheckInterruptionPeriodically(processedRows);
+        processedRows++;
       }
     } else {
       int numRows = Math.min(numRecords, limit);
@@ -190,6 +199,7 @@ public class GroupByDataTableReducer implements DataTableReducer {
           }
         }
         rows.add(row);
+        Tracing.ThreadAccountantOps.sampleAndCheckInterruptionPeriodically(i);
       }
     }
 
@@ -270,31 +280,30 @@ public class GroupByDataTableReducer implements DataTableReducer {
     ColumnDataType[] storedColumnDataTypes = dataSchema.getStoredColumnDataTypes();
     for (int i = 0; i < numReduceThreadsToUse; i++) {
       List<DataTable> reduceGroup = reduceGroups.get(i);
+      int taskId = i;
+      ThreadExecutionContext parentContext = Tracing.getThreadAccountant().getThreadExecutionContext();
       futures[i] = reducerContext.getExecutorService().submit(new TraceRunnable() {
         @Override
         public void runJob() {
-          for (DataTable dataTable : reduceGroup) {
-            // Terminate when thread is interrupted. This is expected when the query already fails in the main thread.
-            if (Thread.interrupted()) {
-              return;
-            }
-            try {
-              boolean nullHandlingEnabled = _queryContext.isNullHandlingEnabled();
-              RoaringBitmap[] nullBitmaps = null;
-              if (nullHandlingEnabled) {
-                nullBitmaps = new RoaringBitmap[_numColumns];
-                for (int i = 0; i < _numColumns; i++) {
-                  nullBitmaps[i] = dataTable.getNullRowIds(i);
+          Tracing.ThreadAccountantOps.setupWorker(taskId, new ThreadResourceUsageProvider(), parentContext);
+          try {
+            for (DataTable dataTable : reduceGroup) {
+              try {
+                boolean nullHandlingEnabled = _queryContext.isNullHandlingEnabled();
+                RoaringBitmap[] nullBitmaps = null;
+                if (nullHandlingEnabled) {
+                  nullBitmaps = new RoaringBitmap[_numColumns];
+                  for (int i = 0; i < _numColumns; i++) {
+                    nullBitmaps[i] = dataTable.getNullRowIds(i);
+                  }
                 }
-              }
 
-              int numRows = dataTable.getNumberOfRows();
-              for (int rowIdBatch = 0; rowIdBatch < numRows; rowIdBatch += MAX_ROWS_UPSERT_PER_INTERRUPTION_CHECK) {
-                if (Thread.interrupted()) {
-                  return;
-                }
-                int upper = Math.min(rowIdBatch + MAX_ROWS_UPSERT_PER_INTERRUPTION_CHECK, numRows);
-                for (int rowId = rowIdBatch; rowId < upper; rowId++) {
+                int numRows = dataTable.getNumberOfRows();
+                for (int rowId = 0; rowId < numRows; rowId++) {
+                  // Terminate when thread is interrupted.
+                  // This is expected when the query already fails in the main thread.
+                  // The first check will always be performed when rowId = 0
+                  Tracing.ThreadAccountantOps.sampleAndCheckInterruptionPeriodically(rowId);
                   Object[] values = new Object[_numColumns];
                   for (int colId = 0; colId < _numColumns; colId++) {
                     switch (storedColumnDataTypes[colId]) {
@@ -321,7 +330,7 @@ public class GroupByDataTableReducer implements DataTableReducer {
                         break;
                       case OBJECT:
                         // TODO: Move ser/de into AggregationFunction interface
-                        DataTable.CustomObject customObject = dataTable.getCustomObject(rowId, colId);
+                        CustomObject customObject = dataTable.getCustomObject(rowId, colId);
                         if (customObject != null) {
                           values[colId] = ObjectSerDeUtils.deserialize(customObject);
                         }
@@ -340,10 +349,12 @@ public class GroupByDataTableReducer implements DataTableReducer {
                   }
                   indexedTable.upsert(new Record(values));
                 }
+              } finally {
+                countDownLatch.countDown();
               }
-            } finally {
-              countDownLatch.countDown();
             }
+          } finally {
+            Tracing.ThreadAccountantOps.clear();
           }
         }
       });
@@ -355,7 +366,9 @@ public class GroupByDataTableReducer implements DataTableReducer {
         throw new TimeoutException("Timed out in broker reduce phase");
       }
     } catch (InterruptedException e) {
-      throw new RuntimeException("Interrupted in broker reduce phase", e);
+      Exception killedErrorMsg = Tracing.getThreadAccountant().getErrorStatus();
+      throw new EarlyTerminationException("Interrupted in broker reduce phase"
+          + (killedErrorMsg == null ? StringUtils.EMPTY : " " + killedErrorMsg), e);
     } finally {
       for (Future future : futures) {
         if (!future.isDone()) {

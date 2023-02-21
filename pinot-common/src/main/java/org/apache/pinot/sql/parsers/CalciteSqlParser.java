@@ -58,6 +58,7 @@ import org.apache.pinot.common.request.ExpressionType;
 import org.apache.pinot.common.request.Function;
 import org.apache.pinot.common.request.Identifier;
 import org.apache.pinot.common.request.PinotQuery;
+import org.apache.pinot.common.utils.config.QueryOptionsUtils;
 import org.apache.pinot.common.utils.request.RequestUtils;
 import org.apache.pinot.segment.spi.AggregationFunctionType;
 import org.apache.pinot.spi.utils.Pairs;
@@ -171,7 +172,7 @@ public class CalciteSqlParser {
     if (sqlType == null) {
       throw new SqlCompilationException("SqlNode with executable statement not found!");
     }
-    return new SqlNodeAndOptions(statementNode, sqlType, options);
+    return new SqlNodeAndOptions(statementNode, sqlType, QueryOptionsUtils.resolveCaseInsensitiveOptions(options));
   }
 
   public static PinotQuery compileToPinotQuery(String sql)
@@ -493,13 +494,6 @@ public class CalciteSqlParser {
     return options;
   }
 
-  private static void setOptions(PinotQuery pinotQuery, List<String> optionsStatements) {
-    if (optionsStatements.isEmpty()) {
-      return;
-    }
-    pinotQuery.setQueryOptions(extractOptionsMap(optionsStatements));
-  }
-
   /**
    * Removes comments from the query.
    * NOTE: Comment indicator within single quotes (literal) and double quotes (identifier) are ignored.
@@ -719,15 +713,16 @@ public class CalciteSqlParser {
         SqlNode elseOperand = caseSqlNode.getElseOperand();
         Expression caseFuncExpr = RequestUtils.getFunctionExpression("case");
         Preconditions.checkState(whenOperands.size() == thenOperands.size());
-        for (int i = 0; i < whenOperands.size(); i++) {
-          SqlNode whenSqlNode = whenOperands.get(i);
+        // TODO: convert this to new format once 0.13 is released
+        for (SqlNode whenSqlNode : whenOperands.getList()) {
           Expression whenExpression = toExpression(whenSqlNode);
           if (isAggregateExpression(whenExpression)) {
             throw new SqlCompilationException(
                 "Aggregation functions inside WHEN Clause is not supported - " + whenSqlNode);
           }
           caseFuncExpr.getFunctionCall().addToOperands(whenExpression);
-          SqlNode thenSqlNode = thenOperands.get(i);
+        }
+        for (SqlNode thenSqlNode : thenOperands.getList()) {
           Expression thenExpression = toExpression(thenSqlNode);
           if (isAggregateExpression(thenExpression)) {
             throw new SqlCompilationException(
@@ -786,8 +781,12 @@ public class CalciteSqlParser {
             functionNode.getFunctionQuantifier().toString()))) {
           if (canonicalName.equals("count")) {
             canonicalName = "distinctcount";
+          } else if (canonicalName.equals("sum")) {
+            canonicalName = "distinctsum";
+          } else if (canonicalName.equals("avg")) {
+            canonicalName = "distinctavg";
           } else if (AggregationFunctionType.isAggregationFunction(canonicalName)) {
-            // Aggregation function(other than COUNT) on DISTINCT is not supported, e.g. SUM(DISTINCT colA).
+            // Aggregation functions other than COUNT, SUM, AVG on DISTINCT are not supported.
             throw new SqlCompilationException("Function '" + functionName + "' on DISTINCT is not supported.");
           }
         }

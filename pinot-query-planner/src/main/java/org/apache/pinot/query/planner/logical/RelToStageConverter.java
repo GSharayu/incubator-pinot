@@ -30,11 +30,12 @@ import org.apache.calcite.rel.logical.LogicalProject;
 import org.apache.calcite.rel.logical.LogicalSort;
 import org.apache.calcite.rel.logical.LogicalTableScan;
 import org.apache.calcite.rel.logical.LogicalValues;
+import org.apache.calcite.rel.logical.LogicalWindow;
 import org.apache.calcite.rel.type.RelDataType;
 import org.apache.calcite.rel.type.RelDataTypeField;
 import org.apache.calcite.rel.type.RelRecordType;
-import org.apache.calcite.rex.RexLiteral;
 import org.apache.pinot.common.utils.DataSchema;
+import org.apache.pinot.common.utils.PinotDataType;
 import org.apache.pinot.query.planner.partitioning.FieldSelectionKeySelector;
 import org.apache.pinot.query.planner.stage.AggregateNode;
 import org.apache.pinot.query.planner.stage.FilterNode;
@@ -44,6 +45,8 @@ import org.apache.pinot.query.planner.stage.SortNode;
 import org.apache.pinot.query.planner.stage.StageNode;
 import org.apache.pinot.query.planner.stage.TableScanNode;
 import org.apache.pinot.query.planner.stage.ValueNode;
+import org.apache.pinot.query.planner.stage.WindowNode;
+import org.apache.pinot.spi.data.FieldSpec;
 
 
 /**
@@ -78,6 +81,8 @@ public final class RelToStageConverter {
       return convertLogicalSort((LogicalSort) node, currentStageId);
     } else if (node instanceof LogicalValues) {
       return convertLogicalValues((LogicalValues) node, currentStageId);
+    } else if (node instanceof LogicalWindow) {
+      return convertLogicalWindow((LogicalWindow) node, currentStageId);
     } else {
       throw new UnsupportedOperationException("Unsupported logical plan node: " + node);
     }
@@ -87,16 +92,20 @@ public final class RelToStageConverter {
     return new ValueNode(currentStageId, toDataSchema(node.getRowType()), node.tuples);
   }
 
+  private static StageNode convertLogicalWindow(LogicalWindow node, int currentStageId) {
+    return new WindowNode(currentStageId, node.groups, node.constants, toDataSchema(node.getRowType()));
+  }
+
   private static StageNode convertLogicalSort(LogicalSort node, int currentStageId) {
-    int fetch = node.fetch == null ? 0 : ((RexLiteral) node.fetch).getValueAs(Integer.class);
-    int offset = node.offset == null ? 0 : ((RexLiteral) node.offset).getValueAs(Integer.class);
+    int fetch = RexExpressionUtils.getValueAsInt(node.fetch);
+    int offset = RexExpressionUtils.getValueAsInt(node.offset);
     return new SortNode(currentStageId, node.getCollation().getFieldCollations(), fetch, offset,
         toDataSchema(node.getRowType()));
   }
 
   private static StageNode convertLogicalAggregate(LogicalAggregate node, int currentStageId) {
     return new AggregateNode(currentStageId, toDataSchema(node.getRowType()), node.getAggCallList(),
-        node.getGroupSet());
+        RexExpression.toRexInputRefs(node.getGroupSet()), node.getHints());
   }
 
   private static StageNode convertLogicalProject(LogicalProject node, int currentStageId) {
@@ -121,7 +130,8 @@ public final class RelToStageConverter {
     JoinInfo joinInfo = node.analyzeCondition();
     FieldSelectionKeySelector leftFieldSelectionKeySelector = new FieldSelectionKeySelector(joinInfo.leftKeys);
     FieldSelectionKeySelector rightFieldSelectionKeySelector = new FieldSelectionKeySelector(joinInfo.rightKeys);
-    return new JoinNode(currentStageId, toDataSchema(node.getRowType()), joinType,
+    return new JoinNode(currentStageId, toDataSchema(node.getRowType()), toDataSchema(node.getLeft().getRowType()),
+        toDataSchema(node.getRight().getRowType()), joinType,
         new JoinNode.JoinKeys(leftFieldSelectionKeySelector, rightFieldSelectionKeySelector),
         joinInfo.nonEquiConditions.stream().map(RexExpression::toRexExpression).collect(Collectors.toList()));
   }
@@ -132,7 +142,7 @@ public final class RelToStageConverter {
       String[] columnNames = recordType.getFieldNames().toArray(new String[]{});
       DataSchema.ColumnDataType[] columnDataTypes = new DataSchema.ColumnDataType[columnNames.length];
       for (int i = 0; i < columnNames.length; i++) {
-        columnDataTypes[i] = convertColumnDataType(recordType.getFieldList().get(i));
+        columnDataTypes[i] = convertToColumnDataType(recordType.getFieldList().get(i).getType());
       }
       return new DataSchema(columnNames, columnDataTypes);
     } else {
@@ -140,8 +150,8 @@ public final class RelToStageConverter {
     }
   }
 
-  private static DataSchema.ColumnDataType convertColumnDataType(RelDataTypeField relDataTypeField) {
-    switch (relDataTypeField.getType().getSqlTypeName()) {
+  public static DataSchema.ColumnDataType convertToColumnDataType(RelDataType relDataType) {
+    switch (relDataType.getSqlTypeName()) {
       case BOOLEAN:
         return DataSchema.ColumnDataType.BOOLEAN;
       case TINYINT:
@@ -151,7 +161,7 @@ public final class RelToStageConverter {
       case BIGINT:
         return DataSchema.ColumnDataType.LONG;
       case DECIMAL:
-        return DataSchema.ColumnDataType.BIG_DECIMAL;
+        return resolveDecimal(relDataType);
       case FLOAT:
         return DataSchema.ColumnDataType.FLOAT;
       case REAL:
@@ -164,12 +174,55 @@ public final class RelToStageConverter {
       case CHAR:
       case VARCHAR:
         return DataSchema.ColumnDataType.STRING;
+      case OTHER:
+        return DataSchema.ColumnDataType.OBJECT;
       case BINARY:
       case VARBINARY:
         return DataSchema.ColumnDataType.BYTES;
       default:
-        throw new IllegalStateException("Unexpected RelDataTypeField: " + relDataTypeField.getType() + " for column: "
-            + relDataTypeField.getName());
+        return DataSchema.ColumnDataType.BYTES;
+    }
+  }
+
+  public static FieldSpec.DataType convertToFieldSpecDataType(RelDataType relDataType) {
+    DataSchema.ColumnDataType columnDataType = convertToColumnDataType(relDataType);
+    if (columnDataType == DataSchema.ColumnDataType.OBJECT) {
+      return FieldSpec.DataType.BYTES;
+    }
+    return columnDataType.toDataType();
+  }
+
+  public static PinotDataType convertToPinotDataType(RelDataType relDataType) {
+    return PinotDataType.getPinotDataTypeForExecution(convertToColumnDataType(relDataType));
+  }
+
+  /**
+   * Calcite uses DEMICAL type to infer data type hoisting and infer arithmetic result types. down casting this
+   * back to the proper primitive type for Pinot.
+   *
+   * @param relDataType the DECIMAL rel data type.
+   * @return proper {@link DataSchema.ColumnDataType}.
+   * @see {@link org.apache.calcite.rel.type.RelDataTypeFactoryImpl#decimalOf}.
+   */
+  private static DataSchema.ColumnDataType resolveDecimal(RelDataType relDataType) {
+    int precision = relDataType.getPrecision();
+    int scale = relDataType.getScale();
+    if (scale == 0) {
+      if (precision <= 10) {
+        return DataSchema.ColumnDataType.INT;
+      } else if (precision <= 38) {
+        return DataSchema.ColumnDataType.LONG;
+      } else {
+        return DataSchema.ColumnDataType.BIG_DECIMAL;
+      }
+    } else {
+      if (precision <= 14) {
+        return DataSchema.ColumnDataType.FLOAT;
+      } else if (precision <= 30) {
+        return DataSchema.ColumnDataType.DOUBLE;
+      } else {
+        return DataSchema.ColumnDataType.BIG_DECIMAL;
+      }
     }
   }
 }

@@ -22,6 +22,7 @@ import com.google.common.annotations.VisibleForTesting;
 import io.grpc.ManagedChannel;
 import io.grpc.ManagedChannelBuilder;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
@@ -34,14 +35,19 @@ import org.apache.pinot.common.proto.PinotQueryWorkerGrpc;
 import org.apache.pinot.common.proto.Worker;
 import org.apache.pinot.common.response.broker.ResultTable;
 import org.apache.pinot.common.utils.DataSchema;
-import org.apache.pinot.core.transport.ServerInstance;
+import org.apache.pinot.core.common.ObjectSerDeUtils;
 import org.apache.pinot.query.mailbox.MailboxService;
 import org.apache.pinot.query.planner.QueryPlan;
 import org.apache.pinot.query.planner.StageMetadata;
 import org.apache.pinot.query.planner.stage.MailboxReceiveNode;
+import org.apache.pinot.query.routing.VirtualServer;
+import org.apache.pinot.query.routing.VirtualServerAddress;
 import org.apache.pinot.query.runtime.blocks.TransferableBlock;
 import org.apache.pinot.query.runtime.blocks.TransferableBlockUtils;
 import org.apache.pinot.query.runtime.operator.MailboxReceiveOperator;
+import org.apache.pinot.query.runtime.operator.OperatorStats;
+import org.apache.pinot.query.runtime.operator.utils.OperatorUtils;
+import org.apache.pinot.query.runtime.operator.utils.StatsAggregator;
 import org.apache.pinot.query.runtime.plan.DistributedStagePlan;
 import org.apache.pinot.query.runtime.plan.serde.QueryPlanSerDeUtils;
 import org.roaringbitmap.RoaringBitmap;
@@ -61,22 +67,29 @@ public class QueryDispatcher {
   }
 
   public ResultTable submitAndReduce(long requestId, QueryPlan queryPlan,
-      MailboxService<TransferableBlock> mailboxService, long timeoutNano)
+      MailboxService<TransferableBlock> mailboxService, long timeoutMs, Map<String, String> queryOptions)
+      throws Exception {
+    return submitAndReduce(requestId, queryPlan, mailboxService, timeoutMs, queryOptions, new HashMap<>());
+  }
+
+  public ResultTable submitAndReduce(long requestId, QueryPlan queryPlan,
+      MailboxService<TransferableBlock> mailboxService, long timeoutMs, Map<String, String> queryOptions,
+      Map<String, String> metadata)
       throws Exception {
     // submit all the distributed stages.
-    int reduceStageId = submit(requestId, queryPlan);
+    int reduceStageId = submit(requestId, queryPlan, timeoutMs, queryOptions);
     // run reduce stage and return result.
     MailboxReceiveNode reduceNode = (MailboxReceiveNode) queryPlan.getQueryStageMap().get(reduceStageId);
     MailboxReceiveOperator mailboxReceiveOperator = createReduceStageOperator(mailboxService,
-        queryPlan.getStageMetadataMap().get(reduceNode.getSenderStageId()).getServerInstances(),
-        requestId, reduceNode.getSenderStageId(), reduceNode.getDataSchema(), mailboxService.getHostname(),
-        mailboxService.getMailboxPort());
-    List<DataBlock> resultDataBlocks = reduceMailboxReceive(mailboxReceiveOperator, timeoutNano);
+        queryPlan.getStageMetadataMap().get(reduceNode.getSenderStageId()).getServerInstances(), requestId,
+        reduceNode.getSenderStageId(), reduceStageId, reduceNode.getDataSchema(),
+        new VirtualServerAddress(mailboxService.getHostname(), mailboxService.getMailboxPort(), 0), timeoutMs);
+    List<DataBlock> resultDataBlocks = reduceMailboxReceive(mailboxReceiveOperator, timeoutMs, metadata);
     return toResultTable(resultDataBlocks, queryPlan.getQueryResultFields(),
         queryPlan.getQueryStageMap().get(0).getDataSchema());
   }
 
-  public int submit(long requestId, QueryPlan queryPlan)
+  public int submit(long requestId, QueryPlan queryPlan, long timeoutMs, Map<String, String> queryOptions)
       throws Exception {
     int reduceStageId = -1;
     for (Map.Entry<Integer, StageMetadata> stage : queryPlan.getStageMetadataMap().entrySet()) {
@@ -85,19 +98,18 @@ public class QueryDispatcher {
       if (queryPlan.getQueryStageMap().get(stageId) instanceof MailboxReceiveNode) {
         reduceStageId = stageId;
       } else {
-        List<ServerInstance> serverInstances = stage.getValue().getServerInstances();
-        for (ServerInstance serverInstance : serverInstances) {
+        List<VirtualServer> serverInstances = stage.getValue().getServerInstances();
+        for (VirtualServer serverInstance : serverInstances) {
           String host = serverInstance.getHostname();
           int servicePort = serverInstance.getQueryServicePort();
-          int mailboxPort = serverInstance.getQueryMailboxPort();
           DispatchClient client = getOrCreateDispatchClient(host, servicePort);
-          Worker.QueryResponse response = client.submit(Worker.QueryRequest.newBuilder()
-              .setStagePlan(QueryPlanSerDeUtils.serialize(constructDistributedStagePlan(queryPlan, stageId,
-                  serverInstance)))
-              .putMetadata("REQUEST_ID", String.valueOf(requestId))
-              .putMetadata("SERVER_INSTANCE_HOST", serverInstance.getHostname())
-              .putMetadata("SERVER_INSTANCE_PORT", String.valueOf(mailboxPort)).build());
-          if (response.containsMetadata("ERROR")) {
+          Worker.QueryResponse response = client.submit(Worker.QueryRequest.newBuilder().setStagePlan(
+                  QueryPlanSerDeUtils.serialize(constructDistributedStagePlan(queryPlan, stageId, serverInstance)))
+              .putMetadata(QueryConfig.KEY_OF_BROKER_REQUEST_ID, String.valueOf(requestId))
+              .putMetadata(QueryConfig.KEY_OF_BROKER_REQUEST_TIMEOUT_MS, String.valueOf(timeoutMs))
+              .putAllMetadata(queryOptions).build());
+
+          if (response.containsMetadata(QueryConfig.KEY_OF_SERVER_RESPONSE_STATUS_ERROR)) {
             throw new RuntimeException(
                 String.format("Unable to execute query plan at stage %s on server %s: ERROR: %s", stageId,
                     serverInstance, response));
@@ -114,36 +126,60 @@ public class QueryDispatcher {
   }
 
   public static DistributedStagePlan constructDistributedStagePlan(QueryPlan queryPlan, int stageId,
-      ServerInstance serverInstance) {
+      VirtualServer serverInstance) {
     return new DistributedStagePlan(stageId, serverInstance, queryPlan.getQueryStageMap().get(stageId),
         queryPlan.getStageMetadataMap());
   }
 
-  public static List<DataBlock> reduceMailboxReceive(MailboxReceiveOperator mailboxReceiveOperator) {
-    return reduceMailboxReceive(mailboxReceiveOperator, QueryConfig.DEFAULT_TIMEOUT_NANO);
-  }
-
-  public static List<DataBlock> reduceMailboxReceive(MailboxReceiveOperator mailboxReceiveOperator, long timeoutNano) {
+  public static List<DataBlock> reduceMailboxReceive(MailboxReceiveOperator mailboxReceiveOperator, long timeoutMs) {
     List<DataBlock> resultDataBlocks = new ArrayList<>();
     TransferableBlock transferableBlock;
-    long timeoutWatermark = System.nanoTime() + timeoutNano;
+    long timeoutWatermark = System.nanoTime() + timeoutMs * 1_000_000L;
     while (System.nanoTime() < timeoutWatermark) {
       transferableBlock = mailboxReceiveOperator.nextBlock();
       if (TransferableBlockUtils.isEndOfStream(transferableBlock) && transferableBlock.isErrorBlock()) {
         // TODO: we only received bubble up error from the execution stage tree.
         // TODO: query dispatch should also send cancel signal to the rest of the execution stage tree.
-          throw new RuntimeException("Received error query execution result block: "
-              + transferableBlock.getDataBlock().getExceptions());
+        throw new RuntimeException(
+            "Received error query execution result block: " + transferableBlock.getDataBlock().getExceptions());
       }
       if (transferableBlock.isNoOpBlock()) {
         continue;
       } else if (transferableBlock.isEndOfStreamBlock()) {
         return resultDataBlocks;
       }
-
       resultDataBlocks.add(transferableBlock.getDataBlock());
     }
+    throw new RuntimeException("Timed out while receiving from mailbox: " + QueryException.EXECUTION_TIMEOUT_ERROR);
+  }
 
+  public static List<DataBlock> reduceMailboxReceive(MailboxReceiveOperator mailboxReceiveOperator, long timeoutMs,
+      Map<String, String> metadata) {
+    List<DataBlock> resultDataBlocks = new ArrayList<>();
+    TransferableBlock transferableBlock;
+    long timeoutWatermark = System.nanoTime() + timeoutMs * 1_000_000L;
+    while (System.nanoTime() < timeoutWatermark) {
+      transferableBlock = mailboxReceiveOperator.nextBlock();
+      if (TransferableBlockUtils.isEndOfStream(transferableBlock) && transferableBlock.isErrorBlock()) {
+        // TODO: we only received bubble up error from the execution stage tree.
+        // TODO: query dispatch should also send cancel signal to the rest of the execution stage tree.
+        throw new RuntimeException(
+            "Received error query execution result block: " + transferableBlock.getDataBlock().getExceptions());
+      }
+      if (transferableBlock.isNoOpBlock()) {
+        continue;
+      } else if (transferableBlock.isEndOfStreamBlock()) {
+        StatsAggregator statsAggregator = new StatsAggregator();
+        for (Map.Entry<String, OperatorStats> entry : transferableBlock.getResultMetadata().entrySet()) {
+          LOGGER.info("Broker Query Execution Stats, OperatorId: {}, OperatorStats: {}", entry.getKey(),
+              OperatorUtils.operatorStatsToJson(entry.getValue()));
+          statsAggregator.aggregate(entry.getValue().getExecutionStats());
+        }
+        metadata.putAll(statsAggregator.getStats());
+        return resultDataBlocks;
+      }
+      resultDataBlocks.add(transferableBlock.getDataBlock());
+    }
     throw new RuntimeException("Timed out while receiving from mailbox: " + QueryException.EXECUTION_TIMEOUT_ERROR);
   }
 
@@ -154,14 +190,13 @@ public class QueryDispatcher {
     for (DataBlock dataBlock : queryResult) {
       int numColumns = resultSchema.getColumnNames().length;
       int numRows = dataBlock.getNumberOfRows();
-      DataSchema.ColumnDataType[] resultColumnDataTypes = resultSchema.getColumnDataTypes();
       List<Object[]> rows = new ArrayList<>(dataBlock.getNumberOfRows());
       if (numRows > 0) {
         RoaringBitmap[] nullBitmaps = new RoaringBitmap[numColumns];
         for (int colId = 0; colId < numColumns; colId++) {
           nullBitmaps[colId] = dataBlock.getNullRowIds(colId);
         }
-        List<Object[]> rawRows = DataBlockUtils.extractRows(dataBlock);
+        List<Object[]> rawRows = DataBlockUtils.extractRows(dataBlock, ObjectSerDeUtils::deserialize);
         int rowId = 0;
         for (Object[] rawRow : rawRows) {
           Object[] row = new Object[numColumns];
@@ -196,11 +231,12 @@ public class QueryDispatcher {
 
   @VisibleForTesting
   public static MailboxReceiveOperator createReduceStageOperator(MailboxService<TransferableBlock> mailboxService,
-      List<ServerInstance> sendingInstances, long jobId, int stageId, DataSchema dataSchema, String hostname,
-      int port) {
+      List<VirtualServer> sendingInstances, long jobId, int stageId, int reducerStageId, DataSchema dataSchema,
+      VirtualServerAddress server, long timeoutMs) {
+    // timeout is set for reduce stage
     MailboxReceiveOperator mailboxReceiveOperator =
-        new MailboxReceiveOperator(mailboxService, dataSchema, sendingInstances,
-            RelDistribution.Type.RANDOM_DISTRIBUTED, null, hostname, port, jobId, stageId);
+        new MailboxReceiveOperator(mailboxService, sendingInstances,
+            RelDistribution.Type.RANDOM_DISTRIBUTED, server, jobId, stageId, reducerStageId, timeoutMs);
     return mailboxReceiveOperator;
   }
 

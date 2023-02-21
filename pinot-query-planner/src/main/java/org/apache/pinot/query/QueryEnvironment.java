@@ -30,7 +30,7 @@ import org.apache.calcite.plan.RelOptRule;
 import org.apache.calcite.plan.RelOptUtil;
 import org.apache.calcite.plan.hep.HepProgram;
 import org.apache.calcite.plan.hep.HepProgramBuilder;
-import org.apache.calcite.prepare.CalciteCatalogReader;
+import org.apache.calcite.prepare.PinotCalciteCatalogReader;
 import org.apache.calcite.prepare.Prepare;
 import org.apache.calcite.rel.RelNode;
 import org.apache.calcite.rel.RelRoot;
@@ -38,17 +38,19 @@ import org.apache.calcite.rel.hint.HintStrategyTable;
 import org.apache.calcite.rel.rules.PinotQueryRuleSets;
 import org.apache.calcite.rel.type.RelDataTypeFactory;
 import org.apache.calcite.rex.RexBuilder;
+import org.apache.calcite.runtime.CalciteContextException;
 import org.apache.calcite.sql.SqlExplain;
 import org.apache.calcite.sql.SqlExplainFormat;
 import org.apache.calcite.sql.SqlExplainLevel;
 import org.apache.calcite.sql.SqlKind;
 import org.apache.calcite.sql.SqlNode;
 import org.apache.calcite.sql.fun.PinotOperatorTable;
-import org.apache.calcite.sql.util.ChainedSqlOperatorTable;
+import org.apache.calcite.sql.util.PinotChainedSqlOperatorTable;
 import org.apache.calcite.sql2rel.SqlToRelConverter;
 import org.apache.calcite.sql2rel.StandardConvertletTable;
 import org.apache.calcite.tools.FrameworkConfig;
 import org.apache.calcite.tools.Frameworks;
+import org.apache.pinot.common.config.provider.TableCache;
 import org.apache.pinot.query.context.PlannerContext;
 import org.apache.pinot.query.planner.PlannerUtils;
 import org.apache.pinot.query.planner.QueryPlan;
@@ -78,25 +80,31 @@ public class QueryEnvironment {
   // Pinot extensions
   private final Collection<RelOptRule> _logicalRuleSet;
   private final WorkerManager _workerManager;
+  private final TableCache _tableCache;
 
-  public QueryEnvironment(TypeFactory typeFactory, CalciteSchema rootSchema, WorkerManager workerManager) {
+  public QueryEnvironment(TypeFactory typeFactory, CalciteSchema rootSchema, WorkerManager workerManager,
+      TableCache tableCache) {
     _typeFactory = typeFactory;
     _rootSchema = rootSchema;
     _workerManager = workerManager;
+    _tableCache = tableCache;
 
     // catalog
     Properties catalogReaderConfigProperties = new Properties();
     catalogReaderConfigProperties.setProperty(CalciteConnectionProperty.CASE_SENSITIVE.camelName(), "true");
-    _catalogReader = new CalciteCatalogReader(_rootSchema, _rootSchema.path(null), _typeFactory,
+    _catalogReader = new PinotCalciteCatalogReader(_rootSchema, _rootSchema.path(null), _typeFactory,
         new CalciteConnectionConfigImpl(catalogReaderConfigProperties));
 
     _config = Frameworks.newConfigBuilder().traitDefs()
-        .operatorTable(new ChainedSqlOperatorTable(Arrays.asList(
+        .operatorTable(new PinotChainedSqlOperatorTable(Arrays.asList(
             PinotOperatorTable.instance(),
             _catalogReader)))
         .defaultSchema(_rootSchema.plus())
         .sqlToRelConverterConfig(SqlToRelConverter.config()
             .withHintStrategyTable(getHintStrategyTable())
+            .withTrimUnusedFields(true)
+            // SUB-QUERY Threshold is useless as we are encoding all IN clause in-line anyway
+            .withInSubQueryThreshold(Integer.MAX_VALUE)
             .addRelBuilderConfigTransform(c -> c.withPushJoinCondition(true))
             .addRelBuilderConfigTransform(c -> c.withAggregateUnique(true)))
         .build();
@@ -124,11 +132,14 @@ public class QueryEnvironment {
    * @param sqlNodeAndOptions parsed SQL query.
    * @return a dispatchable query plan
    */
-  public QueryPlan planQuery(String sqlQuery, SqlNodeAndOptions sqlNodeAndOptions) {
+  public QueryPlan planQuery(String sqlQuery, SqlNodeAndOptions sqlNodeAndOptions, long requestId) {
     try (PlannerContext plannerContext = new PlannerContext(_config, _catalogReader, _typeFactory, _hepProgram)) {
       plannerContext.setOptions(sqlNodeAndOptions.getOptions());
       RelRoot relRoot = compileQuery(sqlNodeAndOptions.getSqlNode(), plannerContext);
-      return toDispatchablePlan(relRoot, plannerContext);
+      return toDispatchablePlan(relRoot, plannerContext, requestId);
+    } catch (CalciteContextException e) {
+      throw new RuntimeException("Error composing query plan for '" + sqlQuery
+          + "': " + e.getMessage() + "'", e);
     } catch (Exception e) {
       throw new RuntimeException("Error composing query plan for: " + sqlQuery, e);
     }
@@ -137,9 +148,9 @@ public class QueryEnvironment {
   /**
    * Explain a SQL query.
    *
-   * Similar to {@link QueryEnvironment#planQuery(String, SqlNodeAndOptions)}, this API runs the query compilation.
-   * But it doesn't run the distributed {@link QueryPlan} generation, instead it only returns the explained logical
-   * plan.
+   * Similar to {@link QueryEnvironment#planQuery(String, SqlNodeAndOptions, long)}, this API runs the query
+   * compilation. But it doesn't run the distributed {@link QueryPlan} generation, instead it only returns the
+   * explained logical plan.
    *
    * @param sqlQuery SQL query string.
    * @param sqlNodeAndOptions parsed SQL query.
@@ -161,7 +172,7 @@ public class QueryEnvironment {
 
   @VisibleForTesting
   public QueryPlan planQuery(String sqlQuery) {
-    return planQuery(sqlQuery, CalciteSqlParser.compileToSqlNodeAndOptions(sqlQuery));
+    return planQuery(sqlQuery, CalciteSqlParser.compileToSqlNodeAndOptions(sqlQuery), 0);
   }
 
   @VisibleForTesting
@@ -200,7 +211,8 @@ public class QueryEnvironment {
     SqlToRelConverter sqlToRelConverter =
         new SqlToRelConverter(plannerContext.getPlanner(), plannerContext.getValidator(), _catalogReader, cluster,
             StandardConvertletTable.INSTANCE, _config.getSqlToRelConverterConfig());
-    return sqlToRelConverter.convertQuery(parsed, false, true);
+    RelRoot relRoot = sqlToRelConverter.convertQuery(parsed, false, true);
+    return relRoot.withRel(sqlToRelConverter.trimUnusedFields(false, relRoot.rel));
   }
 
   private RelNode optimize(RelRoot relRoot, PlannerContext plannerContext) {
@@ -215,9 +227,9 @@ public class QueryEnvironment {
     }
   }
 
-  private QueryPlan toDispatchablePlan(RelRoot relRoot, PlannerContext plannerContext) {
+  private QueryPlan toDispatchablePlan(RelRoot relRoot, PlannerContext plannerContext, long requestId) {
     // 5. construct a dispatchable query plan.
-    StagePlanner queryStagePlanner = new StagePlanner(plannerContext, _workerManager);
+    StagePlanner queryStagePlanner = new StagePlanner(plannerContext, _workerManager, requestId, _tableCache);
     return queryStagePlanner.makePlan(relRoot);
   }
 

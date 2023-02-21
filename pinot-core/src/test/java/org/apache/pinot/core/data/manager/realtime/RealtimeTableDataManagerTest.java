@@ -45,6 +45,7 @@ import org.apache.pinot.segment.spi.creator.SegmentVersion;
 import org.apache.pinot.segment.spi.index.metadata.SegmentMetadataImpl;
 import org.apache.pinot.spi.config.table.TableConfig;
 import org.apache.pinot.spi.config.table.TableType;
+import org.apache.pinot.spi.data.DateTimeFieldSpec;
 import org.apache.pinot.spi.data.FieldSpec;
 import org.apache.pinot.spi.data.Schema;
 import org.apache.pinot.spi.data.readers.GenericRow;
@@ -52,6 +53,8 @@ import org.apache.pinot.spi.metrics.PinotMetricUtils;
 import org.apache.pinot.spi.utils.CommonConstants;
 import org.apache.pinot.spi.utils.builder.TableConfigBuilder;
 import org.apache.pinot.util.TestUtils;
+import org.joda.time.DateTimeZone;
+import org.joda.time.format.DateTimeFormat;
 import org.testng.annotations.AfterMethod;
 import org.testng.annotations.BeforeMethod;
 import org.testng.annotations.Test;
@@ -61,6 +64,7 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 import static org.testng.Assert.assertEquals;
 import static org.testng.Assert.assertFalse;
+import static org.testng.Assert.assertNotNull;
 import static org.testng.Assert.assertTrue;
 
 
@@ -106,8 +110,6 @@ public class RealtimeTableDataManagerTest {
     File localSegDir = createSegment(tableConfig, schema, segName);
     long segCrc = TableDataManagerTestUtils.getCRC(localSegDir, SegmentVersion.v3);
     segmentZKMetadata.setCrc(segCrc);
-    when(propertyStore.get(ZKMetadataProvider.constructPropertyStorePathForSegment(TABLE_NAME_WITH_TYPE, segName), null,
-        AccessOption.PERSISTENT)).thenReturn(segmentZKMetadata.toZNRecord());
 
     // Move the segment to the backup location.
     File backup = new File(TABLE_DATA_DIR, segName + CommonConstants.Segment.SEGMENT_BACKUP_DIR_SUFFIX);
@@ -116,7 +118,7 @@ public class RealtimeTableDataManagerTest {
     assertFalse(localSegDir.exists());
     IndexLoadingConfig indexLoadingConfig =
         TableDataManagerTestUtils.createIndexLoadingConfig("default", tableConfig, schema);
-    tmgr.addSegment(segName, tableConfig, indexLoadingConfig);
+    tmgr.addSegment(segName, indexLoadingConfig, segmentZKMetadata);
     // Segment data is put back the default location, and backup location is deleted.
     assertTrue(localSegDir.exists());
     assertFalse(backup.exists());
@@ -142,15 +144,13 @@ public class RealtimeTableDataManagerTest {
         TableDataManagerTestUtils.makeRawSegment(segName, createSegment(tableConfig, schema, segName),
             new File(TEMP_DIR, segName + TarGzCompressionUtils.TAR_GZ_FILE_EXTENSION), true);
     segmentZKMetadata.setStatus(Status.DONE);
-    when(propertyStore.get(ZKMetadataProvider.constructPropertyStorePathForSegment(TABLE_NAME_WITH_TYPE, segName), null,
-        AccessOption.PERSISTENT)).thenReturn(segmentZKMetadata.toZNRecord());
 
     // Local segment dir doesn't exist, thus downloading from deep store.
     File localSegDir = new File(TABLE_DATA_DIR, segName);
     assertFalse(localSegDir.exists());
     IndexLoadingConfig indexLoadingConfig =
         TableDataManagerTestUtils.createIndexLoadingConfig("default", tableConfig, schema);
-    tmgr.addSegment(segName, tableConfig, indexLoadingConfig);
+    tmgr.addSegment(segName, indexLoadingConfig, segmentZKMetadata);
     // Segment data is put on default location.
     assertTrue(localSegDir.exists());
     SegmentMetadataImpl llmd = new SegmentMetadataImpl(new File(TABLE_DATA_DIR, segName));
@@ -224,5 +224,29 @@ public class RealtimeTableDataManagerTest {
     when(propertyStore.get(ZKMetadataProvider.constructPropertyStorePathForSchema(TABLE_NAME), null,
         AccessOption.PERSISTENT)).thenReturn(schemaZNRecord);
     return schema;
+  }
+
+  @Test
+  public void testSetDefaultTimeValueIfInvalid() {
+    SegmentZKMetadata segmentZKMetadata = mock(SegmentZKMetadata.class);
+    long currentTimeMs = System.currentTimeMillis();
+    when(segmentZKMetadata.getCreationTime()).thenReturn(currentTimeMs);
+
+    TableConfig tableConfig =
+        new TableConfigBuilder(TableType.OFFLINE).setTableName("testTable").setTimeColumnName("timeColumn").build();
+    Schema schema = new Schema.SchemaBuilder().setSchemaName("testTable")
+        .addDateTime("timeColumn", FieldSpec.DataType.TIMESTAMP, "TIMESTAMP", "1:MILLISECONDS").build();
+    RealtimeTableDataManager.setDefaultTimeValueIfInvalid(tableConfig, schema, segmentZKMetadata);
+    DateTimeFieldSpec timeFieldSpec = schema.getSpecForTimeColumn("timeColumn");
+    assertNotNull(timeFieldSpec);
+    assertEquals(timeFieldSpec.getDefaultNullValue(), currentTimeMs);
+
+    schema = new Schema.SchemaBuilder().setSchemaName("testTable")
+        .addDateTime("timeColumn", FieldSpec.DataType.INT, "SIMPLE_DATE_FORMAT|yyyyMMdd", "1:DAYS").build();
+    RealtimeTableDataManager.setDefaultTimeValueIfInvalid(tableConfig, schema, segmentZKMetadata);
+    timeFieldSpec = schema.getSpecForTimeColumn("timeColumn");
+    assertNotNull(timeFieldSpec);
+    assertEquals(timeFieldSpec.getDefaultNullValue(),
+        Integer.parseInt(DateTimeFormat.forPattern("yyyyMMdd").withZone(DateTimeZone.UTC).print(currentTimeMs)));
   }
 }

@@ -19,9 +19,6 @@
 package org.apache.pinot.query.runtime.plan;
 
 import java.util.List;
-import java.util.Map;
-import org.apache.pinot.core.common.Operator;
-import org.apache.pinot.core.transport.ServerInstance;
 import org.apache.pinot.query.planner.StageMetadata;
 import org.apache.pinot.query.planner.stage.AggregateNode;
 import org.apache.pinot.query.planner.stage.FilterNode;
@@ -34,14 +31,15 @@ import org.apache.pinot.query.planner.stage.StageNode;
 import org.apache.pinot.query.planner.stage.StageNodeVisitor;
 import org.apache.pinot.query.planner.stage.TableScanNode;
 import org.apache.pinot.query.planner.stage.ValueNode;
-import org.apache.pinot.query.runtime.blocks.TransferableBlock;
-import org.apache.pinot.query.runtime.executor.OpChainSchedulerService;
+import org.apache.pinot.query.planner.stage.WindowNode;
+import org.apache.pinot.query.routing.VirtualServer;
 import org.apache.pinot.query.runtime.operator.AggregateOperator;
 import org.apache.pinot.query.runtime.operator.FilterOperator;
 import org.apache.pinot.query.runtime.operator.HashJoinOperator;
 import org.apache.pinot.query.runtime.operator.LiteralValueOperator;
 import org.apache.pinot.query.runtime.operator.MailboxReceiveOperator;
 import org.apache.pinot.query.runtime.operator.MailboxSendOperator;
+import org.apache.pinot.query.runtime.operator.MultiStageOperator;
 import org.apache.pinot.query.runtime.operator.OpChain;
 import org.apache.pinot.query.runtime.operator.SortOperator;
 import org.apache.pinot.query.runtime.operator.TransformOperator;
@@ -53,81 +51,90 @@ import org.apache.pinot.query.runtime.operator.TransformOperator;
  * v1 operators at this point in time.
  *
  * <p>This class should be used statically via {@link #build(StageNode, PlanRequestContext)}
- *
- * @see org.apache.pinot.query.runtime.QueryRunner#processQuery(DistributedStagePlan, OpChainSchedulerService, Map)
  */
-public class PhysicalPlanVisitor implements StageNodeVisitor<Operator<TransferableBlock>, PlanRequestContext> {
+public class PhysicalPlanVisitor implements StageNodeVisitor<MultiStageOperator, PlanRequestContext> {
 
   private static final PhysicalPlanVisitor INSTANCE = new PhysicalPlanVisitor();
 
   public static OpChain build(StageNode node, PlanRequestContext context) {
-    Operator<TransferableBlock> root = node.visit(INSTANCE, context);
-    return new OpChain(root);
+    MultiStageOperator root = node.visit(INSTANCE, context);
+    return new OpChain(root, context.getReceivingMailboxes(), context.getRequestId(), context.getStageId());
   }
 
   @Override
-  public Operator<TransferableBlock> visitMailboxReceive(MailboxReceiveNode node, PlanRequestContext context) {
-    List<ServerInstance> sendingInstances = context.getMetadataMap().get(node.getSenderStageId()).getServerInstances();
-    return new MailboxReceiveOperator(context.getMailboxService(), node.getDataSchema(), sendingInstances,
-        node.getExchangeType(), node.getPartitionKeySelector(), context.getHostName(), context.getPort(),
-        context.getRequestId(), node.getSenderStageId());
+  public MultiStageOperator visitMailboxReceive(MailboxReceiveNode node, PlanRequestContext context) {
+    List<VirtualServer> sendingInstances = context.getMetadataMap().get(node.getSenderStageId()).getServerInstances();
+    MailboxReceiveOperator mailboxReceiveOperator =
+        new MailboxReceiveOperator(context.getMailboxService(), sendingInstances,
+            node.getExchangeType(), context.getServer(),
+            context.getRequestId(), node.getSenderStageId(), node.getStageId(), context.getTimeoutMs());
+    context.addReceivingMailboxes(mailboxReceiveOperator.getSendingMailbox());
+    return mailboxReceiveOperator;
   }
 
   @Override
-  public Operator<TransferableBlock> visitMailboxSend(MailboxSendNode node, PlanRequestContext context) {
-    Operator<TransferableBlock> nextOperator = node.getInputs().get(0).visit(this, context);
+  public MultiStageOperator visitMailboxSend(MailboxSendNode node, PlanRequestContext context) {
+    MultiStageOperator nextOperator = node.getInputs().get(0).visit(this, context);
     StageMetadata receivingStageMetadata = context.getMetadataMap().get(node.getReceiverStageId());
     return new MailboxSendOperator(context.getMailboxService(), nextOperator,
         receivingStageMetadata.getServerInstances(), node.getExchangeType(), node.getPartitionKeySelector(),
-        context.getHostName(), context.getPort(), context.getRequestId(), node.getStageId(), false);
+        context.getServer(), context.getRequestId(), node.getStageId(), node.getReceiverStageId());
   }
 
   @Override
-  public Operator<TransferableBlock> visitAggregate(AggregateNode node, PlanRequestContext context) {
-    Operator<TransferableBlock> nextOperator = node.getInputs().get(0).visit(this, context);
+  public MultiStageOperator visitAggregate(AggregateNode node, PlanRequestContext context) {
+    MultiStageOperator nextOperator = node.getInputs().get(0).visit(this, context);
     return new AggregateOperator(nextOperator, node.getDataSchema(), node.getAggCalls(),
-        node.getGroupSet());
+        node.getGroupSet(), node.getInputs().get(0).getDataSchema(), context._requestId, context._stageId);
   }
 
   @Override
-  public Operator<TransferableBlock> visitFilter(FilterNode node, PlanRequestContext context) {
-    Operator<TransferableBlock> nextOperator = node.getInputs().get(0).visit(this, context);
-    return new FilterOperator(nextOperator, node.getDataSchema(), node.getCondition());
+  public MultiStageOperator visitWindow(WindowNode node, PlanRequestContext context) {
+    MultiStageOperator nextOperator = node.getInputs().get(0).visit(this, context);
+    throw new UnsupportedOperationException("Window not yet supported!");
   }
 
   @Override
-  public Operator<TransferableBlock> visitJoin(JoinNode node, PlanRequestContext context) {
+  public MultiStageOperator visitFilter(FilterNode node, PlanRequestContext context) {
+    MultiStageOperator nextOperator = node.getInputs().get(0).visit(this, context);
+    return new FilterOperator(nextOperator, node.getDataSchema(), node.getCondition(), context.getRequestId(),
+        context.getStageId());
+  }
+
+  @Override
+  public MultiStageOperator visitJoin(JoinNode node, PlanRequestContext context) {
     StageNode left = node.getInputs().get(0);
     StageNode right = node.getInputs().get(1);
 
-    Operator<TransferableBlock> leftOperator = left.visit(this, context);
-    Operator<TransferableBlock> rightOperator = right.visit(this, context);
+    MultiStageOperator leftOperator = left.visit(this, context);
+    MultiStageOperator rightOperator = right.visit(this, context);
 
-    return new HashJoinOperator(leftOperator, rightOperator, node.getDataSchema(), node.getJoinKeys(),
-        node.getJoinClauses(), node.getJoinRelType());
+    return new HashJoinOperator(leftOperator, rightOperator, left.getDataSchema(), node, context.getRequestId(),
+        context.getStageId());
   }
 
   @Override
-  public Operator<TransferableBlock> visitProject(ProjectNode node, PlanRequestContext context) {
-    Operator<TransferableBlock> nextOperator = node.getInputs().get(0).visit(this, context);
+  public MultiStageOperator visitProject(ProjectNode node, PlanRequestContext context) {
+    MultiStageOperator nextOperator = node.getInputs().get(0).visit(this, context);
     return new TransformOperator(nextOperator, node.getDataSchema(), node.getProjects(),
-        node.getInputs().get(0).getDataSchema());
+        node.getInputs().get(0).getDataSchema(), context.getRequestId(), context.getStageId());
   }
 
   @Override
-  public Operator<TransferableBlock> visitSort(SortNode node, PlanRequestContext context) {
-    Operator<TransferableBlock> nextOperator = node.getInputs().get(0).visit(this, context);
+  public MultiStageOperator visitSort(SortNode node, PlanRequestContext context) {
+    MultiStageOperator nextOperator = node.getInputs().get(0).visit(this, context);
     return new SortOperator(nextOperator, node.getCollationKeys(), node.getCollationDirections(),
-        node.getFetch(), node.getOffset(), node.getDataSchema());
+        node.getFetch(), node.getOffset(), node.getDataSchema(), context.getRequestId(), context.getStageId());
   }
 
   @Override
-  public Operator<TransferableBlock> visitTableScan(TableScanNode node, PlanRequestContext context) {
+  public MultiStageOperator visitTableScan(TableScanNode node, PlanRequestContext context) {
     throw new UnsupportedOperationException("Stage node of type TableScanNode is not supported!");
   }
 
   @Override
-  public Operator<TransferableBlock> visitValue(ValueNode node, PlanRequestContext context) {
-    return new LiteralValueOperator(node.getDataSchema(), node.getLiteralRows());
+  public MultiStageOperator visitValue(ValueNode node, PlanRequestContext context) {
+    return new LiteralValueOperator(node.getDataSchema(), node.getLiteralRows(), context.getRequestId(),
+        context.getStageId());
   }
 }

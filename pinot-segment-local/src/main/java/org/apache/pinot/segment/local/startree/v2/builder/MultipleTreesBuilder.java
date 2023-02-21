@@ -22,15 +22,14 @@ import com.google.common.base.Preconditions;
 import java.io.Closeable;
 import java.io.File;
 import java.io.FileNotFoundException;
-import java.io.FileOutputStream;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Map;
 import javax.annotation.Nullable;
 import org.apache.commons.collections.CollectionUtils;
 import org.apache.commons.configuration.Configuration;
 import org.apache.commons.configuration.PropertiesConfiguration;
 import org.apache.commons.io.FileUtils;
+import org.apache.commons.lang3.tuple.Pair;
 import org.apache.pinot.segment.local.indexsegment.immutable.ImmutableSegmentLoader;
 import org.apache.pinot.segment.local.startree.StarTreeBuilderUtils;
 import org.apache.pinot.segment.local.startree.v2.store.StarTreeIndexMapUtils;
@@ -41,6 +40,7 @@ import org.apache.pinot.segment.spi.V1Constants;
 import org.apache.pinot.segment.spi.index.startree.StarTreeV2Constants;
 import org.apache.pinot.segment.spi.index.startree.StarTreeV2Constants.MetadataKey;
 import org.apache.pinot.segment.spi.store.SegmentDirectoryPaths;
+import org.apache.pinot.segment.spi.utils.SegmentMetadataUtils;
 import org.apache.pinot.spi.config.table.StarTreeIndexConfig;
 import org.apache.pinot.spi.env.CommonsConfigurationUtils;
 import org.apache.pinot.spi.utils.ReadMode;
@@ -130,7 +130,7 @@ public class MultipleTreesBuilder implements Closeable {
       File starTreeIndexDir = new File(_segmentDirectory, StarTreeV2Constants.STAR_TREE_TEMP_DIR);
       FileUtils.forceMkdir(starTreeIndexDir);
       _metadataProperties.addProperty(MetadataKey.STAR_TREE_COUNT, numStarTrees);
-      List<Map<IndexKey, IndexValue>> indexMaps = new ArrayList<>(numStarTrees);
+      List<List<Pair<IndexKey, IndexValue>>> indexMaps = new ArrayList<>(numStarTrees);
 
       // Build all star-trees
       for (int i = 0; i < numStarTrees; i++) {
@@ -144,11 +144,7 @@ public class MultipleTreesBuilder implements Closeable {
       }
 
       // Save the metadata and index maps to the disk
-      // Commons Configuration 1.10 does not support file path containing '%'.
-      // Explicitly providing the output stream for the file bypasses the problem.
-      try (FileOutputStream fileOutputStream = new FileOutputStream(_metadataProperties.getFile())) {
-        _metadataProperties.save(fileOutputStream);
-      }
+      SegmentMetadataUtils.savePropertiesConfiguration(_metadataProperties);
       StarTreeIndexMapUtils
           .storeToFile(indexMaps, new File(_segmentDirectory, StarTreeV2Constants.INDEX_MAP_FILE_NAME));
       FileUtils.forceDelete(starTreeIndexDir);

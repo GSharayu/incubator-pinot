@@ -23,6 +23,7 @@ import java.util.List;
 import org.apache.pinot.common.datablock.DataBlock;
 import org.apache.pinot.common.datablock.DataBlockUtils;
 import org.apache.pinot.common.utils.DataSchema;
+import org.apache.pinot.query.routing.VirtualServerAddress;
 import org.apache.pinot.query.runtime.blocks.TransferableBlock;
 import org.testng.Assert;
 import org.testng.annotations.Test;
@@ -30,27 +31,31 @@ import org.testng.annotations.Test;
 
 public class InMemoryMailboxServiceTest {
 
+  private static final int DEFAULT_SENDER_STAGE_ID = 0;
+  private static final int DEFAULT_RECEIVER_STAGE_ID = 1;
   private static final DataSchema TEST_DATA_SCHEMA = new DataSchema(new String[]{"foo", "bar"},
       new DataSchema.ColumnDataType[]{DataSchema.ColumnDataType.INT, DataSchema.ColumnDataType.STRING});
+  private static final int NUM_ENTRIES = 5;
 
   @Test
   public void testHappyPath()
       throws Exception {
-    InMemoryMailboxService mailboxService = new InMemoryMailboxService("localhost", 0);
-    final StringMailboxIdentifier mailboxId = new StringMailboxIdentifier(
-        "happyPathJob", "localhost", 0, "localhost", 0);
+    InMemoryMailboxService mailboxService = new InMemoryMailboxService("localhost", 0, ignored -> { });
+    final JsonMailboxIdentifier mailboxId = new JsonMailboxIdentifier(
+        "happyPathJob", new VirtualServerAddress("localhost", 0, 0), new VirtualServerAddress("localhost", 0, 0),
+        DEFAULT_SENDER_STAGE_ID, DEFAULT_RECEIVER_STAGE_ID);
     InMemoryReceivingMailbox receivingMailbox = (InMemoryReceivingMailbox) mailboxService.getReceivingMailbox(
         mailboxId);
     InMemorySendingMailbox sendingMailbox = (InMemorySendingMailbox) mailboxService.getSendingMailbox(mailboxId);
 
     // Sends are non-blocking as long as channel capacity is not breached
-    for (int i = 0; i < InMemoryMailboxService.DEFAULT_CHANNEL_CAPACITY; i++) {
-      sendingMailbox.send(getTestTransferableBlock(i, i + 1 == InMemoryMailboxService.DEFAULT_CHANNEL_CAPACITY));
+    for (int i = 0; i < NUM_ENTRIES; i++) {
+      sendingMailbox.send(getTestTransferableBlock(i, i + 1 == NUM_ENTRIES));
     }
     sendingMailbox.complete();
 
     // Iterate 1 less time than the loop above
-    for (int i = 0; i + 1 < InMemoryMailboxService.DEFAULT_CHANNEL_CAPACITY; i++) {
+    for (int i = 0; i + 1 < NUM_ENTRIES; i++) {
       TransferableBlock receivedBlock = receivingMailbox.receive();
       List<Object[]> receivedContainer = receivedBlock.getContainer();
       Assert.assertEquals(receivedContainer.size(), 1);
@@ -72,9 +77,10 @@ public class InMemoryMailboxServiceTest {
    */
   @Test
   public void testNonLocalMailboxId() {
-    InMemoryMailboxService mailboxService = new InMemoryMailboxService("localhost", 0);
-    final StringMailboxIdentifier mailboxId = new StringMailboxIdentifier(
-        "happyPathJob", "localhost", 0, "localhost", 1);
+    InMemoryMailboxService mailboxService = new InMemoryMailboxService("localhost", 0, ignored -> { });
+    final JsonMailboxIdentifier mailboxId = new JsonMailboxIdentifier(
+        "happyPathJob", new VirtualServerAddress("localhost", 0, 0), new VirtualServerAddress("localhost", 1, 0),
+        DEFAULT_SENDER_STAGE_ID, DEFAULT_RECEIVER_STAGE_ID);
 
     // Test getReceivingMailbox
     try {

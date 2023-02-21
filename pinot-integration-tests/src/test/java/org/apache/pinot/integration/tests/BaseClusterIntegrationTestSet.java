@@ -20,10 +20,12 @@ package org.apache.pinot.integration.tests;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import java.io.BufferedReader;
+import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.util.List;
 import java.util.Map;
+import org.apache.commons.lang.StringEscapeUtils;
 import org.apache.commons.lang3.StringUtils;
 import org.apache.helix.PropertyKey;
 import org.apache.helix.model.ExternalView;
@@ -225,21 +227,8 @@ public abstract class BaseClusterIntegrationTestSet extends BaseClusterIntegrati
     query = "SELECT DaysSinceEpoch, MAX(ArrDelay) - MAX(AirTime) AS Diff FROM mytable GROUP BY DaysSinceEpoch HAVING "
         + "(Diff >= 300 AND Diff < 500) OR Diff < -500 ORDER BY Diff DESC";
     testQuery(query);
-  }
-
-  private void testHardCodedQueriesV1()
-      throws Exception {
-    String query;
-    String h2Query;
-    // Escape quotes
-    // TODO: move to common when multistage support correct escaping strategy.
-    query = "SELECT DistanceGroup FROM mytable WHERE DATE_TIME_CONVERT(DaysSinceEpoch, '1:DAYS:EPOCH', "
-        + "'1:DAYS:SIMPLE_DATE_FORMAT:yyyy-MM-dd''T''HH:mm:ss.SSS''Z''', '1:DAYS') = '2014-09-05T00:00:00.000Z'";
-    h2Query = "SELECT DistanceGroup FROM mytable WHERE DaysSinceEpoch = 16318 LIMIT 10000";
-    testQuery(query, h2Query);
 
     // LIKE
-    // TODO: move to common when multistage support LIKE
     query = "SELECT count(*) FROM mytable WHERE OriginState LIKE 'A_'";
     testQuery(query);
     query = "SELECT count(*) FROM mytable WHERE DestCityName LIKE 'C%'";
@@ -256,6 +245,18 @@ public abstract class BaseClusterIntegrationTestSet extends BaseClusterIntegrati
         "SELECT ArrTime, ArrTime + ArrTime * 9 - ArrTime * 10, ArrTime + 5 + ArrDelay, ArrTime * 5 + ArrDelay FROM "
             + "mytable WHERE (ArrTime - 100) * (5 + ArrDelay)> 0";
     testQuery(query, h2Query);
+
+    // Escape quotes
+    query = "SELECT DistanceGroup FROM mytable WHERE DATE_TIME_CONVERT(DaysSinceEpoch, '1:DAYS:EPOCH', "
+        + "'1:DAYS:SIMPLE_DATE_FORMAT:yyyy-MM-dd''T''HH:mm:ss.SSS''Z''', '1:DAYS') = '2014-09-05T00:00:00.000Z'";
+    h2Query = "SELECT DistanceGroup FROM mytable WHERE DaysSinceEpoch = 16318 LIMIT 10000";
+    testQuery(query, h2Query);
+  }
+
+  private void testHardCodedQueriesV1()
+      throws Exception {
+    String query;
+    String h2Query;
     // TODO: move to common when multistage support CAST AS 'LONG', for now it must use: CAST AS BIGINT
     query =
         "SELECT SUM(CAST(CAST(ArrTime AS varchar) AS LONG)) FROM mytable WHERE DaysSinceEpoch <> 16312 AND Carrier = "
@@ -604,6 +605,36 @@ public abstract class BaseClusterIntegrationTestSet extends BaseClusterIntegrati
       }
       return true;
     }, 30_000L, "Failed to wait for all segments come back online");
+  }
+
+  public String reloadTableAndValidateResponse(String tableName, TableType tableType, boolean forceDownload)
+      throws IOException {
+    String response =
+        sendPostRequest(_controllerRequestURLBuilder.forTableReload(tableName, tableType, forceDownload), null);
+    String tableNameWithType = TableNameBuilder.forType(tableType).tableNameWithType(tableName);
+    JsonNode tableLevelDetails =
+        JsonUtils.stringToJsonNode(StringEscapeUtils.unescapeJava(response.split(": ")[1])).get(tableNameWithType);
+    String isZKWriteSuccess = tableLevelDetails.get("reloadJobMetaZKStorageStatus").asText();
+    assertEquals(isZKWriteSuccess, "SUCCESS");
+    String jobId = tableLevelDetails.get("reloadJobId").asText();
+    String jobStatusResponse = sendGetRequest(_controllerRequestURLBuilder.forControllerJobStatus(jobId));
+    JsonNode jobStatus = JsonUtils.stringToJsonNode(jobStatusResponse);
+
+    // Validate all fields are present
+    assertEquals(jobStatus.get("metadata").get("jobId").asText(), jobId);
+    assertEquals(jobStatus.get("metadata").get("jobType").asText(), "RELOAD_ALL_SEGMENTS");
+    assertEquals(jobStatus.get("metadata").get("tableName").asText(), tableNameWithType);
+    return jobId;
+  }
+
+  public boolean isReloadJobCompleted(String reloadJobId)
+      throws Exception {
+    String jobStatusResponse = sendGetRequest(_controllerRequestURLBuilder.forControllerJobStatus(reloadJobId));
+    JsonNode jobStatus = JsonUtils.stringToJsonNode(jobStatusResponse);
+
+    assertEquals(jobStatus.get("metadata").get("jobId").asText(), reloadJobId);
+    assertEquals(jobStatus.get("metadata").get("jobType").asText(), "RELOAD_ALL_SEGMENTS");
+    return jobStatus.get("totalSegmentCount").asInt() == jobStatus.get("successCount").asInt();
   }
 
   /**

@@ -41,6 +41,7 @@ import org.apache.pinot.common.proto.Server;
 import org.apache.pinot.common.request.context.ExpressionContext;
 import org.apache.pinot.common.request.context.FilterContext;
 import org.apache.pinot.common.request.context.FunctionContext;
+import org.apache.pinot.common.utils.config.QueryOptionsUtils;
 import org.apache.pinot.core.common.ExplainPlanRowData;
 import org.apache.pinot.core.common.ExplainPlanRows;
 import org.apache.pinot.core.common.Operator;
@@ -54,7 +55,6 @@ import org.apache.pinot.core.operator.blocks.results.ResultsBlockUtils;
 import org.apache.pinot.core.operator.filter.EmptyFilterOperator;
 import org.apache.pinot.core.operator.filter.MatchAllFilterOperator;
 import org.apache.pinot.core.plan.Plan;
-import org.apache.pinot.core.plan.maker.InstancePlanMakerImplV2;
 import org.apache.pinot.core.plan.maker.PlanMaker;
 import org.apache.pinot.core.query.aggregation.function.AggregationFunction;
 import org.apache.pinot.core.query.config.QueryExecutorConfig;
@@ -65,7 +65,6 @@ import org.apache.pinot.core.query.request.context.QueryContext;
 import org.apache.pinot.core.query.request.context.TimerContext;
 import org.apache.pinot.core.query.request.context.utils.QueryContextConverterUtils;
 import org.apache.pinot.core.query.utils.idset.IdSet;
-import org.apache.pinot.core.util.QueryOptionsUtils;
 import org.apache.pinot.core.util.trace.TraceContext;
 import org.apache.pinot.segment.local.data.manager.SegmentDataManager;
 import org.apache.pinot.segment.local.data.manager.TableDataManager;
@@ -78,10 +77,9 @@ import org.apache.pinot.spi.data.FieldSpec;
 import org.apache.pinot.spi.env.PinotConfiguration;
 import org.apache.pinot.spi.exception.BadQueryRequestException;
 import org.apache.pinot.spi.exception.QueryCancelledException;
+import org.apache.pinot.spi.plugin.PluginManager;
 import org.apache.pinot.spi.trace.Tracing;
-import org.apache.pinot.spi.utils.CommonConstants;
 import org.apache.pinot.spi.utils.builder.TableNameBuilder;
-import org.joda.time.Interval;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -97,7 +95,7 @@ public class ServerQueryExecutorV1Impl implements QueryExecutor {
   private ServerMetrics _serverMetrics;
   private SegmentPrunerService _segmentPrunerService;
   private PlanMaker _planMaker;
-  private long _defaultTimeoutMs = CommonConstants.Server.DEFAULT_QUERY_EXECUTOR_TIMEOUT_MS;
+  private long _defaultTimeoutMs;
   private boolean _enablePrefetch;
 
   @Override
@@ -109,11 +107,15 @@ public class ServerQueryExecutorV1Impl implements QueryExecutor {
     QueryExecutorConfig queryExecutorConfig = new QueryExecutorConfig(config);
     LOGGER.info("Trying to build SegmentPrunerService");
     _segmentPrunerService = new SegmentPrunerService(queryExecutorConfig.getPrunerConfig());
-    LOGGER.info("Trying to build QueryPlanMaker");
-    _planMaker = new InstancePlanMakerImplV2(queryExecutorConfig);
-    if (queryExecutorConfig.getTimeOut() > 0) {
-      _defaultTimeoutMs = queryExecutorConfig.getTimeOut();
+    String planMakerClass = queryExecutorConfig.getPlanMakerClass();
+    LOGGER.info("Trying to build PlanMaker with class: {}", planMakerClass);
+    try {
+      _planMaker = PluginManager.get().createInstance(planMakerClass);
+    } catch (Exception e) {
+      throw new RuntimeException("Caught exception while creating PlanMaker with class: " + planMakerClass);
     }
+    _planMaker.init(config);
+    _defaultTimeoutMs = queryExecutorConfig.getTimeOut();
     _enablePrefetch = Boolean.parseBoolean(config.getProperty(ENABLE_PREFETCH));
     LOGGER.info("Initialized query executor with defaultTimeoutMs: {}, enablePrefetch: {}", _defaultTimeoutMs,
         _enablePrefetch);
@@ -210,40 +212,38 @@ public class ServerQueryExecutorV1Impl implements QueryExecutor {
     }
 
     // Gather stats for realtime consuming segments
+    // TODO: the freshness time should not be collected at query time because there is no guarantee that the consuming
+    //       segment is queried (consuming segment might be pruned, or the server only contains relocated committed
+    //       segments)
     int numConsumingSegmentsQueried = 0;
-    int numOnlineSegments = 0;
     long minIndexTimeMs = 0;
     long minIngestionTimeMs = 0;
     long maxEndTimeMs = 0;
     if (tableDataManager instanceof RealtimeTableDataManager) {
-      numConsumingSegmentsQueried = 0;
-      numOnlineSegments = 0;
       minIndexTimeMs = Long.MAX_VALUE;
       minIngestionTimeMs = Long.MAX_VALUE;
       maxEndTimeMs = Long.MIN_VALUE;
       for (IndexSegment indexSegment : indexSegments) {
+        SegmentMetadata segmentMetadata = indexSegment.getSegmentMetadata();
         if (indexSegment instanceof MutableSegment) {
           numConsumingSegmentsQueried += 1;
-          SegmentMetadata segmentMetadata = indexSegment.getSegmentMetadata();
           long indexTimeMs = segmentMetadata.getLastIndexedTimestamp();
-          if (indexTimeMs != Long.MIN_VALUE && indexTimeMs < minIndexTimeMs) {
-            minIndexTimeMs = indexTimeMs;
+          if (indexTimeMs > 0) {
+            minIndexTimeMs = Math.min(minIndexTimeMs, indexTimeMs);
           }
           long ingestionTimeMs = segmentMetadata.getLatestIngestionTimestamp();
-          if (ingestionTimeMs != Long.MIN_VALUE && ingestionTimeMs < minIngestionTimeMs) {
-            minIngestionTimeMs = ingestionTimeMs;
+          if (ingestionTimeMs > 0) {
+            minIngestionTimeMs = Math.min(minIngestionTimeMs, ingestionTimeMs);
           }
         } else if (indexSegment instanceof ImmutableSegment) {
-          SegmentMetadata segmentMetadata = indexSegment.getSegmentMetadata();
           long indexCreationTime = segmentMetadata.getIndexCreationTime();
-          numOnlineSegments++;
-          if (indexCreationTime != Long.MIN_VALUE) {
+          if (indexCreationTime > 0) {
             maxEndTimeMs = Math.max(maxEndTimeMs, indexCreationTime);
           } else {
             // NOTE: the endTime may be totally inaccurate based on the value added in the timeColumn
-            Interval timeInterval = segmentMetadata.getTimeInterval();
-            if (timeInterval != null) {
-              maxEndTimeMs = Math.max(maxEndTimeMs, timeInterval.getEndMillis());
+            long endTime = segmentMetadata.getEndTime();
+            if (endTime > 0) {
+              maxEndTimeMs = Math.max(maxEndTimeMs, endTime);
             }
           }
         }
@@ -271,7 +271,7 @@ public class ServerQueryExecutorV1Impl implements QueryExecutor {
         // return the error table to broker sooner than here. But in case of race condition, we construct the error
         // table here too.
         instanceResponse.addException(QueryException.getException(QueryException.QUERY_CANCELLATION_ERROR,
-            "Query cancelled on: " + _instanceDataManager.getInstanceId()));
+            "Query cancelled on: " + _instanceDataManager.getInstanceId() + e));
       } else {
         LOGGER.error("Exception processing requestId {}", requestId, e);
         instanceResponse.addException(QueryException.getException(QueryException.QUERY_EXECUTION_ERROR, e));
@@ -314,22 +314,24 @@ public class ServerQueryExecutorV1Impl implements QueryExecutor {
     }
 
     if (tableDataManager instanceof RealtimeTableDataManager) {
-      long minConsumingFreshnessTimeMs;
       if (numConsumingSegmentsQueried > 0) {
-        minConsumingFreshnessTimeMs = minIngestionTimeMs != Long.MAX_VALUE ? minIngestionTimeMs : minIndexTimeMs;
         instanceResponse.addMetadata(MetadataKey.NUM_CONSUMING_SEGMENTS_QUERIED.getName(),
             Integer.toString(numConsumingSegmentsQueried));
+      }
+      long minConsumingFreshnessTimeMs = 0;
+      if (minIngestionTimeMs != Long.MAX_VALUE) {
+        minConsumingFreshnessTimeMs = minIndexTimeMs;
+      } else if (minIndexTimeMs != Long.MAX_VALUE) {
+        minConsumingFreshnessTimeMs = minIndexTimeMs;
+      } else if (maxEndTimeMs != Long.MIN_VALUE) {
+        minConsumingFreshnessTimeMs = maxEndTimeMs;
+      }
+      if (minConsumingFreshnessTimeMs > 0) {
         instanceResponse.addMetadata(MetadataKey.MIN_CONSUMING_FRESHNESS_TIME_MS.getName(),
             Long.toString(minConsumingFreshnessTimeMs));
-        LOGGER.debug("Request {} queried {} consuming segments with minConsumingFreshnessTimeMs: {}", requestId,
-            numConsumingSegmentsQueried, minConsumingFreshnessTimeMs);
-      } else if (numConsumingSegmentsQueried == 0 && maxEndTimeMs != Long.MIN_VALUE) {
-        minConsumingFreshnessTimeMs = maxEndTimeMs;
-        instanceResponse.addMetadata(MetadataKey.MIN_CONSUMING_FRESHNESS_TIME_MS.getName(),
-            Long.toString(maxEndTimeMs));
-        LOGGER.debug("Request {} queried {} consuming segments with minConsumingFreshnessTimeMs: {}", requestId,
-            numConsumingSegmentsQueried, minConsumingFreshnessTimeMs);
       }
+      LOGGER.debug("Request {} queried {} consuming segments with minConsumingFreshnessTimeMs: {}", requestId,
+          numConsumingSegmentsQueried, minConsumingFreshnessTimeMs);
     }
 
     LOGGER.debug("Query processing time for request Id - {}: {}", requestId, queryProcessingTime);
@@ -409,7 +411,7 @@ public class ServerQueryExecutorV1Impl implements QueryExecutor {
     Map<Integer, HashSet<Integer>> uniquePlanNodeHashCodes = new HashMap<>();
 
     // Obtain the list of all possible segment plans after the combine root node
-    List<Operator> children = root.getChildOperators();
+    List<? extends Operator> children = root.getChildOperators();
     for (Operator child : children) {
       int[] operatorId = {3};
       ExplainPlanRows explainPlanRows = new ExplainPlanRows();
@@ -484,7 +486,7 @@ public class ServerQueryExecutorV1Impl implements QueryExecutor {
 
   public static InstanceResponseBlock executeExplainQuery(Plan queryPlan, QueryContext queryContext) {
     ExplainResultsBlock explainResults = new ExplainResultsBlock();
-    List<Operator> childOperators = queryPlan.getPlanNode().run().getChildOperators();
+    List<? extends Operator> childOperators = queryPlan.getPlanNode().run().getChildOperators();
     assert childOperators.size() == 1;
     Operator root = childOperators.get(0);
     Map<Integer, List<ExplainPlanRows>> operatorDepthToRowDataMap;

@@ -124,7 +124,10 @@ public class ImmutableSegmentImpl implements ImmutableSegment {
     File validDocIdsSnapshotFile = getValidDocIdsSnapshotFile();
     try {
       if (validDocIdsSnapshotFile.exists()) {
-        FileUtils.delete(validDocIdsSnapshotFile);
+        if (!FileUtils.deleteQuietly(validDocIdsSnapshotFile)) {
+          LOGGER.warn("Cannot delete old valid doc ids snapshot file: {}, skipping", validDocIdsSnapshotFile);
+          return;
+        }
       }
       try (DataOutputStream dataOutputStream = new DataOutputStream(new FileOutputStream(validDocIdsSnapshotFile))) {
         validDocIds.serialize(dataOutputStream);
@@ -141,7 +144,10 @@ public class ImmutableSegmentImpl implements ImmutableSegment {
     File validDocIdsSnapshotFile = getValidDocIdsSnapshotFile();
     if (validDocIdsSnapshotFile.exists()) {
       try {
-        FileUtils.delete(validDocIdsSnapshotFile);
+        if (!FileUtils.deleteQuietly(validDocIdsSnapshotFile)) {
+          LOGGER.warn("Cannot delete old valid doc ids snapshot file: {}, skipping", validDocIdsSnapshotFile);
+          return;
+        }
         LOGGER.info("Deleted valid doc ids snapshot for segment: {}", getSegmentName());
       } catch (Exception e) {
         LOGGER.warn("Caught exception while deleting valid doc ids snapshot file: {}, skipping",
@@ -241,7 +247,14 @@ public class ImmutableSegmentImpl implements ImmutableSegment {
     if (_partitionDedupMetadataManager != null) {
       _partitionDedupMetadataManager.removeSegment(this);
     }
-
+    // StarTreeIndexContainer refers to other column index containers, so close it firstly.
+    if (_starTreeIndexContainer != null) {
+      try {
+        _starTreeIndexContainer.close();
+      } catch (IOException e) {
+        LOGGER.error("Failed to close star-tree. Continuing with error.", e);
+      }
+    }
     for (Map.Entry<String, ColumnIndexContainer> entry : _indexContainerMap.entrySet()) {
       try {
         entry.getValue().close();
@@ -253,13 +266,6 @@ public class ImmutableSegmentImpl implements ImmutableSegment {
       _segmentDirectory.close();
     } catch (Exception e) {
       LOGGER.error("Failed to close segment directory: {}. Continuing with error.", _segmentDirectory, e);
-    }
-    if (_starTreeIndexContainer != null) {
-      try {
-        _starTreeIndexContainer.close();
-      } catch (IOException e) {
-        LOGGER.error("Failed to close star-tree. Continuing with error.", e);
-      }
     }
   }
 

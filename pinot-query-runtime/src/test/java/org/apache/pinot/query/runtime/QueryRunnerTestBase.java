@@ -22,12 +22,15 @@ import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableMap;
+import com.google.common.math.DoubleMath;
+import java.math.BigDecimal;
 import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
+import java.sql.Timestamp;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
@@ -36,6 +39,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Random;
+import java.util.stream.Collectors;
 import org.apache.pinot.core.transport.ServerInstance;
 import org.apache.pinot.query.QueryEnvironment;
 import org.apache.pinot.query.QueryServerEnclosure;
@@ -43,25 +47,36 @@ import org.apache.pinot.query.QueryTestSet;
 import org.apache.pinot.query.mailbox.GrpcMailboxService;
 import org.apache.pinot.query.planner.QueryPlan;
 import org.apache.pinot.query.planner.stage.MailboxReceiveNode;
+import org.apache.pinot.query.routing.VirtualServer;
+import org.apache.pinot.query.routing.VirtualServerAddress;
 import org.apache.pinot.query.runtime.operator.MailboxReceiveOperator;
 import org.apache.pinot.query.runtime.plan.DistributedStagePlan;
+import org.apache.pinot.query.service.QueryConfig;
 import org.apache.pinot.query.service.QueryDispatcher;
 import org.apache.pinot.spi.data.FieldSpec;
 import org.apache.pinot.spi.data.Schema;
 import org.apache.pinot.spi.data.readers.GenericRow;
+import org.apache.pinot.spi.utils.ByteArray;
+import org.apache.pinot.spi.utils.CommonConstants;
 import org.apache.pinot.spi.utils.StringUtil;
 import org.testng.Assert;
 
 
-
 public abstract class QueryRunnerTestBase extends QueryTestSet {
+  protected static final double DOUBLE_CMP_EPSILON = 0.0001d;
+  protected static final String SEGMENT_BREAKER_KEY = "__SEGMENT_BREAKER_KEY__";
+  protected static final String SEGMENT_BREAKER_STR = "------";
+  protected static final GenericRow SEGMENT_BREAKER_ROW = new GenericRow();
   protected static final Random RANDOM_REQUEST_ID_GEN = new Random();
-
   protected QueryEnvironment _queryEnvironment;
   protected String _reducerHostname;
   protected int _reducerGrpcPort;
   protected Map<ServerInstance, QueryServerEnclosure> _servers = new HashMap<>();
   protected GrpcMailboxService _mailboxService;
+
+  static {
+    SEGMENT_BREAKER_ROW.putValue(SEGMENT_BREAKER_KEY, SEGMENT_BREAKER_STR);
+  }
 
   // --------------------------------------------------------------------------
   // QUERY UTILS
@@ -69,30 +84,40 @@ public abstract class QueryRunnerTestBase extends QueryTestSet {
   protected List<Object[]> queryRunner(String sql) {
     QueryPlan queryPlan = _queryEnvironment.planQuery(sql);
     Map<String, String> requestMetadataMap =
-        ImmutableMap.of("REQUEST_ID", String.valueOf(RANDOM_REQUEST_ID_GEN.nextLong()));
+        ImmutableMap.of(QueryConfig.KEY_OF_BROKER_REQUEST_ID, String.valueOf(RANDOM_REQUEST_ID_GEN.nextLong()),
+            QueryConfig.KEY_OF_BROKER_REQUEST_TIMEOUT_MS,
+            String.valueOf(CommonConstants.Broker.DEFAULT_BROKER_TIMEOUT_MS));
     MailboxReceiveOperator mailboxReceiveOperator = null;
     for (int stageId : queryPlan.getStageMetadataMap().keySet()) {
       if (queryPlan.getQueryStageMap().get(stageId) instanceof MailboxReceiveNode) {
         MailboxReceiveNode reduceNode = (MailboxReceiveNode) queryPlan.getQueryStageMap().get(stageId);
         mailboxReceiveOperator = QueryDispatcher.createReduceStageOperator(_mailboxService,
             queryPlan.getStageMetadataMap().get(reduceNode.getSenderStageId()).getServerInstances(),
-            Long.parseLong(requestMetadataMap.get("REQUEST_ID")), reduceNode.getSenderStageId(),
-            reduceNode.getDataSchema(), "localhost", _reducerGrpcPort);
+            Long.parseLong(requestMetadataMap.get(QueryConfig.KEY_OF_BROKER_REQUEST_ID)), reduceNode.getSenderStageId(),
+            reduceNode.getStageId(), reduceNode.getDataSchema(),
+            new VirtualServerAddress("localhost", _reducerGrpcPort, 0),
+            Long.parseLong(requestMetadataMap.get(QueryConfig.KEY_OF_BROKER_REQUEST_TIMEOUT_MS)));
       } else {
-        for (ServerInstance serverInstance : queryPlan.getStageMetadataMap().get(stageId).getServerInstances()) {
+        for (VirtualServer serverInstance : queryPlan.getStageMetadataMap().get(stageId).getServerInstances()) {
           DistributedStagePlan distributedStagePlan =
               QueryDispatcher.constructDistributedStagePlan(queryPlan, stageId, serverInstance);
-          _servers.get(serverInstance).processQuery(distributedStagePlan, requestMetadataMap);
+          _servers.get(serverInstance.getServer()).processQuery(distributedStagePlan, requestMetadataMap);
         }
       }
     }
     Preconditions.checkNotNull(mailboxReceiveOperator);
-    return QueryDispatcher.toResultTable(QueryDispatcher.reduceMailboxReceive(mailboxReceiveOperator),
+    return QueryDispatcher.toResultTable(
+        QueryDispatcher.reduceMailboxReceive(mailboxReceiveOperator, CommonConstants.Broker.DEFAULT_BROKER_TIMEOUT_MS),
         queryPlan.getQueryResultFields(), queryPlan.getQueryStageMap().get(0).getDataSchema()).getRows();
   }
 
   protected List<Object[]> queryH2(String sql)
       throws Exception {
+    int firstSemi = sql.indexOf(';');
+    if (firstSemi > 0 && firstSemi != sql.length() - 1) {
+      // trim off any SET statements for H2
+      sql = sql.substring(firstSemi + 1);
+    }
     Statement h2statement = _h2Connection.createStatement(ResultSet.TYPE_FORWARD_ONLY, ResultSet.CONCUR_READ_ONLY);
     h2statement.execute(sql);
     ResultSet h2ResultSet = h2statement.getResultSet();
@@ -109,7 +134,10 @@ public abstract class QueryRunnerTestBase extends QueryTestSet {
   }
 
   protected void compareRowEquals(List<Object[]> resultRows, List<Object[]> expectedRows) {
-    Assert.assertEquals(resultRows.size(), expectedRows.size());
+    Assert.assertEquals(resultRows.size(), expectedRows.size(),
+        String.format("Mismatched number of results. expected: %s, actual: %s",
+            expectedRows.stream().map(Arrays::toString).collect(Collectors.joining(",\n")),
+            resultRows.stream().map(Arrays::toString).collect(Collectors.joining(",\n"))));
 
     Comparator<Object> valueComp = (l, r) -> {
       if (l == null && r == null) {
@@ -124,13 +152,29 @@ public abstract class QueryRunnerTestBase extends QueryTestSet {
       } else if (l instanceof Long) {
         return Long.compare((Long) l, ((Number) r).longValue());
       } else if (l instanceof Float) {
+        if (DoubleMath.fuzzyEquals((Float) l, ((Number) r).floatValue(), DOUBLE_CMP_EPSILON)) {
+          return 0;
+        }
         return Float.compare((Float) l, ((Number) r).floatValue());
       } else if (l instanceof Double) {
+        if (DoubleMath.fuzzyEquals((Double) l, ((Number) r).doubleValue(), DOUBLE_CMP_EPSILON)) {
+          return 0;
+        }
         return Double.compare((Double) l, ((Number) r).doubleValue());
       } else if (l instanceof String) {
         return ((String) l).compareTo((String) r);
       } else if (l instanceof Boolean) {
         return ((Boolean) l).compareTo((Boolean) r);
+      } else if (l instanceof BigDecimal) {
+        if (r instanceof BigDecimal) {
+          return ((BigDecimal) l).compareTo((BigDecimal) r);
+        } else {
+          return ((BigDecimal) l).compareTo(new BigDecimal((String) r));
+        }
+      } else if (l instanceof ByteArray) {
+        return ((ByteArray) l).compareTo(new ByteArray((byte[]) r));
+      } else if (l instanceof Timestamp) {
+        return ((Timestamp) l).compareTo((Timestamp) r);
       } else {
         throw new RuntimeException("non supported type " + l.getClass());
       }
@@ -150,10 +194,13 @@ public abstract class QueryRunnerTestBase extends QueryTestSet {
     for (int i = 0; i < resultRows.size(); i++) {
       Object[] resultRow = resultRows.get(i);
       Object[] expectedRow = expectedRows.get(i);
+      Assert.assertEquals(expectedRow.length, resultRow.length,
+          String.format("Unexpected row size mismatch. Expected: %s, Actual: %s", Arrays.toString(expectedRow),
+              Arrays.toString(resultRow)));
       for (int j = 0; j < resultRow.length; j++) {
         Assert.assertEquals(valueComp.compare(resultRow[j], expectedRow[j]), 0,
-            "Not match at (" + i + "," + j + ")! Expected: " + Arrays.toString(expectedRow)
-                + " Actual: " + Arrays.toString(resultRow));
+            "Not match at (" + i + "," + j + ")! Expected: " + Arrays.toString(expectedRow) + " Actual: "
+                + Arrays.toString(resultRow));
       }
     }
   }
@@ -177,13 +224,17 @@ public abstract class QueryRunnerTestBase extends QueryTestSet {
     for (int rowId = 0; rowId < value.size(); rowId++) {
       GenericRow row = new GenericRow();
       List<Object> rawRow = value.get(rowId);
-      int colId = 0;
-      for (QueryTestCase.ColumnAndType columnAndType : columnAndTypes) {
-        row.putValue(columnAndType._name, rawRow.get(colId++));
+      if (rawRow.size() == 1 && SEGMENT_BREAKER_STR.equals(rawRow.get(0))) {
+        result.add(SEGMENT_BREAKER_ROW);
+      } else {
+        int colId = 0;
+        for (QueryTestCase.ColumnAndType columnAndType : columnAndTypes) {
+          row.putValue(columnAndType._name, rawRow.get(colId++));
+        }
+        // TODO: ts is built-in, but we should allow user overwrite
+        row.putValue("ts", System.currentTimeMillis());
+        result.add(row);
       }
-      // TODO: ts is built-in, but we should allow user overwrite
-      row.putValue("ts", System.currentTimeMillis());
-      result.add(row);
     }
     return result;
   }
@@ -248,8 +299,23 @@ public abstract class QueryRunnerTestBase extends QueryTestSet {
         case STRING:
           fieldType = "varchar(128)";
           break;
+        case FLOAT:
+          fieldType = "real";
+          break;
         case DOUBLE:
           fieldType = "double";
+          break;
+        case BOOLEAN:
+          fieldType = "BOOLEAN";
+          break;
+        case BIG_DECIMAL:
+          fieldType = "NUMERIC";
+          break;
+        case BYTES:
+          fieldType = "BYTEA";
+          break;
+        case TIMESTAMP:
+          fieldType = "TIMESTAMP";
           break;
         default:
           throw new UnsupportedOperationException("Unsupported type conversion to h2 type: " + dataType);
@@ -279,6 +345,8 @@ public abstract class QueryRunnerTestBase extends QueryTestSet {
       public List<ColumnAndType> _schema;
       @JsonProperty("inputs")
       public List<List<Object>> _inputs;
+      @JsonProperty("partitionColumns")
+      public List<String> _partitionColumns;
     }
 
     @JsonIgnoreProperties(ignoreUnknown = true)
@@ -291,7 +359,9 @@ public abstract class QueryRunnerTestBase extends QueryTestSet {
       @JsonProperty("description")
       public String _description;
       @JsonProperty("outputs")
-      public List<List<Object>> _outputs = Collections.emptyList();
+      public List<List<Object>> _outputs = null;
+      @JsonProperty("expectedException")
+      public String _expectedException;
     }
 
     public static class ColumnAndType {

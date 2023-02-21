@@ -28,11 +28,11 @@ import java.nio.ByteBuffer;
 import java.sql.Timestamp;
 import java.util.List;
 import javax.annotation.Nullable;
+import org.apache.pinot.common.CustomObject;
 import org.apache.pinot.common.datablock.ColumnarDataBlock;
 import org.apache.pinot.common.datablock.DataBlock;
 import org.apache.pinot.common.datablock.DataBlockUtils;
 import org.apache.pinot.common.datablock.RowDataBlock;
-import org.apache.pinot.common.datatable.DataTable;
 import org.apache.pinot.common.utils.DataSchema;
 import org.apache.pinot.common.utils.RoaringBitmapUtils;
 import org.apache.pinot.core.common.ObjectSerDeUtils;
@@ -145,7 +145,11 @@ public class DataBlockBuilder {
             setColumn(rowBuilder, byteBuffer, (String) value);
             break;
           case BYTES:
-            setColumn(rowBuilder, byteBuffer, (ByteArray) value);
+            if (value instanceof byte[]) {
+              setColumn(rowBuilder, byteBuffer, new ByteArray((byte[]) value));
+            } else {
+              setColumn(rowBuilder, byteBuffer, (ByteArray) value);
+            }
             break;
           case OBJECT:
             setColumn(rowBuilder, byteBuffer, value);
@@ -520,7 +524,7 @@ public class DataBlockBuilder {
     byteBuffer.putInt(builder._variableSizeDataByteArrayOutputStream.size());
     if (value == null) {
       byteBuffer.putInt(0);
-      builder._variableSizeDataOutputStream.writeInt(DataTable.CustomObject.NULL_TYPE_VALUE);
+      builder._variableSizeDataOutputStream.writeInt(CustomObject.NULL_TYPE_VALUE);
     } else {
       int objectTypeValue = ObjectSerDeUtils.ObjectType.getObjectType(value).getValue();
       byte[] bytes = ObjectSerDeUtils.serialize(value, objectTypeValue);

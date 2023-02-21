@@ -25,6 +25,7 @@ import com.google.common.cache.CacheBuilder;
 import com.google.common.cache.LoadingCache;
 import java.io.File;
 import java.io.IOException;
+import java.net.URI;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
@@ -53,6 +54,7 @@ import org.apache.pinot.common.utils.TarGzCompressionUtils;
 import org.apache.pinot.common.utils.config.TierConfigUtils;
 import org.apache.pinot.common.utils.fetcher.SegmentFetcherFactory;
 import org.apache.pinot.core.data.manager.offline.ImmutableSegmentDataManager;
+import org.apache.pinot.core.util.PeerServerSegmentFinder;
 import org.apache.pinot.segment.local.data.manager.SegmentDataManager;
 import org.apache.pinot.segment.local.data.manager.TableDataManager;
 import org.apache.pinot.segment.local.data.manager.TableDataManagerConfig;
@@ -79,7 +81,7 @@ import org.slf4j.LoggerFactory;
 
 @ThreadSafe
 public abstract class BaseTableDataManager implements TableDataManager {
-  private static final Logger LOGGER = LoggerFactory.getLogger(BaseTableDataManager.class);
+  protected static final Logger LOGGER = LoggerFactory.getLogger(BaseTableDataManager.class);
 
   protected final ConcurrentHashMap<String, SegmentDataManager> _segmentDataManagerMap = new ConcurrentHashMap<>();
   // Semaphore to restrict the maximum number of parallel segment downloads for a table.
@@ -104,6 +106,8 @@ public abstract class BaseTableDataManager implements TableDataManager {
   protected LoadingCache<Pair<String, String>, SegmentErrorInfo> _errorCache;
   // Cache used for identifying segments which could not be acquired since they were recently deleted.
   protected Cache<String, String> _recentlyDeletedSegments;
+
+  protected volatile boolean _shutDown;
 
   @Override
   public void init(TableDataManagerConfig tableDataManagerConfig, String instanceId,
@@ -180,11 +184,17 @@ public abstract class BaseTableDataManager implements TableDataManager {
   @Override
   public void shutDown() {
     _logger.info("Shutting down table data manager for table: {}", _tableNameWithType);
+    _shutDown = true;
     doShutdown();
     _logger.info("Shut down table data manager for table: {}", _tableNameWithType);
   }
 
   protected abstract void doShutdown();
+
+  @Override
+  public boolean isShutDown() {
+    return _shutDown;
+  }
 
   /**
    * {@inheritDoc}
@@ -221,7 +231,7 @@ public abstract class BaseTableDataManager implements TableDataManager {
   }
 
   @Override
-  public void addSegment(String segmentName, TableConfig tableConfig, IndexLoadingConfig indexLoadingConfig)
+  public void addSegment(String segmentName, IndexLoadingConfig indexLoadingConfig, SegmentZKMetadata zkMetadata)
       throws Exception {
     throw new UnsupportedOperationException();
   }
@@ -323,6 +333,11 @@ public abstract class BaseTableDataManager implements TableDataManager {
   }
 
   @Override
+  public TableDataManagerConfig getTableDataManagerConfig() {
+    return _tableDataManagerConfig;
+  }
+
+  @Override
   public void addSegmentError(String segmentName, SegmentErrorInfo segmentErrorInfo) {
     _errorCache.put(Pair.of(_tableNameWithType, segmentName), segmentErrorInfo);
   }
@@ -345,16 +360,16 @@ public abstract class BaseTableDataManager implements TableDataManager {
     String segmentTier = getSegmentCurrentTier(segmentName);
     indexLoadingConfig.setSegmentTier(segmentTier);
     indexLoadingConfig.setTableDataDir(_tableDataDir);
+    indexLoadingConfig.setInstanceTierConfigs(_tableDataManagerConfig.getInstanceTierConfigs());
     File indexDir = getSegmentDataDir(segmentName, segmentTier, indexLoadingConfig.getTableConfig());
     try {
-      // Create backup directory to handle failure of segment reloading.
-      createBackup(indexDir);
-
       // Download segment from deep store if CRC changes or forced to download;
       // otherwise, copy backup directory back to the original index directory.
       // And then continue to load the segment from the index directory.
       boolean shouldDownload = forceDownload || !hasSameCRC(zkMetadata, localMetadata);
       if (shouldDownload && allowDownload(segmentName, zkMetadata)) {
+        // Create backup directory to handle failure of segment reloading.
+        createBackup(indexDir);
         if (forceDownload) {
           LOGGER.info("Segment: {} of table: {} is forced to download", segmentName, _tableNameWithType);
         } else {
@@ -365,12 +380,27 @@ public abstract class BaseTableDataManager implements TableDataManager {
       } else {
         LOGGER.info("Reload existing segment: {} of table: {} on tier: {}", segmentName, _tableNameWithType,
             TierConfigUtils.normalizeTierName(segmentTier));
+        SegmentDirectory segmentDirectory =
+            initSegmentDirectory(segmentName, String.valueOf(zkMetadata.getCrc()), indexLoadingConfig);
+        // We should first try to reuse existing segment directory
+        if (canReuseExistingDirectoryForReload(zkMetadata, segmentTier, segmentDirectory, indexLoadingConfig,
+            schema)) {
+          LOGGER.info("Reloading segment: {} of table: {} using existing segment directory as no reprocessing needed",
+              segmentName, _tableNameWithType);
+          // No reprocessing needed, reuse the same segment
+          ImmutableSegment segment = ImmutableSegmentLoader.load(segmentDirectory, indexLoadingConfig, schema);
+          addSegment(segment);
+          return;
+        }
+        // Create backup directory to handle failure of segment reloading.
+        createBackup(indexDir);
         // The indexDir is empty after calling createBackup, as it's renamed to a backup directory.
         // The SegmentDirectory should initialize accordingly. Like for SegmentLocalFSDirectory, it
         // doesn't load anything from an empty indexDir, but gets the info to complete the copyTo.
-        try (SegmentDirectory segmentDirectory = initSegmentDirectory(segmentName, String.valueOf(zkMetadata.getCrc()),
-            indexLoadingConfig)) {
+        try {
           segmentDirectory.copyTo(indexDir);
+        } finally {
+          segmentDirectory.close();
         }
       }
 
@@ -395,6 +425,16 @@ public abstract class BaseTableDataManager implements TableDataManager {
     }
   }
 
+  private boolean canReuseExistingDirectoryForReload(SegmentZKMetadata segmentZKMetadata,
+      String currentSegmentTier, SegmentDirectory segmentDirectory, IndexLoadingConfig indexLoadingConfig,
+      Schema schema)
+      throws Exception {
+    SegmentDirectoryLoader segmentDirectoryLoader =
+        SegmentDirectoryLoaderRegistry.getSegmentDirectoryLoader(indexLoadingConfig.getSegmentDirectoryLoader());
+    return !segmentDirectoryLoader.needsTierMigration(segmentZKMetadata.getTier(), currentSegmentTier)
+        && !ImmutableSegmentLoader.needPreprocess(segmentDirectory, indexLoadingConfig, schema);
+  }
+
   @Override
   public void addOrReplaceSegment(String segmentName, IndexLoadingConfig indexLoadingConfig,
       SegmentZKMetadata zkMetadata, @Nullable SegmentMetadata localMetadata)
@@ -413,6 +453,7 @@ public abstract class BaseTableDataManager implements TableDataManager {
     String segmentTier = zkMetadata.getTier();
     indexLoadingConfig.setSegmentTier(segmentTier);
     indexLoadingConfig.setTableDataDir(_tableDataDir);
+    indexLoadingConfig.setInstanceTierConfigs(_tableDataManagerConfig.getInstanceTierConfigs());
     if (localMetadata == null && tryLoadExistingSegment(segmentName, indexLoadingConfig, zkMetadata)) {
       return;
     }
@@ -511,6 +552,7 @@ public abstract class BaseTableDataManager implements TableDataManager {
       throws Exception {
     File tarFile = new File(tempRootDir, segmentName + TarGzCompressionUtils.TAR_GZ_FILE_EXTENSION);
     String uri = zkMetadata.getDownloadUrl();
+    boolean downloadSuccess = false;
     try {
       if (_segmentDownloadSemaphore != null) {
         long startTime = System.currentTimeMillis();
@@ -523,16 +565,51 @@ public abstract class BaseTableDataManager implements TableDataManager {
       SegmentFetcherFactory.fetchAndDecryptSegmentToLocal(uri, tarFile, zkMetadata.getCrypterName());
       LOGGER.info("Downloaded tarred segment: {} for table: {} from: {} to: {}, file length: {}", segmentName,
           _tableNameWithType, uri, tarFile, tarFile.length());
+      downloadSuccess = true;
       return tarFile;
     } catch (AttemptsExceededException e) {
       LOGGER.error("Attempts exceeded when downloading segment: {} for table: {} from: {} to: {}", segmentName,
           _tableNameWithType, uri, tarFile);
-      _serverMetrics.addMeteredTableValue(_tableNameWithType, ServerMeter.SEGMENT_DOWNLOAD_FAILURES, 1L);
-      throw e;
+      _serverMetrics.addMeteredTableValue(_tableNameWithType, ServerMeter.SEGMENT_DOWNLOAD_FROM_REMOTE_FAILURES, 1L);
+      if (_tableDataManagerConfig.getTablePeerDownloadScheme() == null) {
+        throw e;
+      }
+      downloadFromPeersWithoutStreaming(segmentName, zkMetadata, tarFile);
+      downloadSuccess = true;
+      return tarFile;
     } finally {
+      if (!downloadSuccess) {
+        _serverMetrics.addMeteredTableValue(_tableNameWithType, ServerMeter.SEGMENT_DOWNLOAD_FAILURES, 1L);
+      }
       if (_segmentDownloadSemaphore != null) {
         _segmentDownloadSemaphore.release();
       }
+    }
+  }
+
+  // not thread safe. Caller should invoke it with safe concurrency control.
+  protected void downloadFromPeersWithoutStreaming(String segmentName, SegmentZKMetadata zkMetadata,
+      File destTarFile) throws Exception {
+    Preconditions.checkArgument(_tableDataManagerConfig.getTablePeerDownloadScheme() != null,
+            "Download peers require non null peer download scheme");
+    List<URI> peerSegmentURIs = PeerServerSegmentFinder.getPeerServerURIs(segmentName,
+        _tableDataManagerConfig.getTablePeerDownloadScheme(), _helixManager, _tableNameWithType);
+    if (peerSegmentURIs.isEmpty()) {
+      String msg = String.format("segment %s doesn't have any peers", segmentName);
+      LOGGER.warn(msg);
+      // HelixStateTransitionHandler would catch the runtime exception and mark the segment state as Error
+      throw new RuntimeException(msg);
+    }
+    try {
+      // Next download the segment from a randomly chosen server using configured scheme.
+      SegmentFetcherFactory.fetchAndDecryptSegmentToLocal(peerSegmentURIs, destTarFile, zkMetadata.getCrypterName());
+      LOGGER.info("Fetched segment {} from peers: {} to: {} of size: {}", segmentName, peerSegmentURIs, destTarFile,
+              destTarFile.length());
+    } catch (AttemptsExceededException e) {
+      LOGGER.error("Attempts exceeded when downloading segment: {} for table: {} from peers {} to: {}", segmentName,
+              _tableNameWithType, peerSegmentURIs, destTarFile);
+      _serverMetrics.addMeteredTableValue(_tableNameWithType, ServerMeter.SEGMENT_DOWNLOAD_FROM_PEERS_FAILURES, 1L);
+      throw e;
     }
   }
 
@@ -601,7 +678,8 @@ public abstract class BaseTableDataManager implements TableDataManager {
       return getSegmentDataDir(segmentName);
     }
     try {
-      String tierDataDir = TierConfigUtils.getDataDirForTier(tableConfig, segmentTier);
+      String tierDataDir =
+          TierConfigUtils.getDataDirForTier(tableConfig, segmentTier, _tableDataManagerConfig.getInstanceTierConfigs());
       File tierTableDataDir = new File(tierDataDir, _tableNameWithType);
       return new File(tierTableDataDir, segmentName);
     } catch (Exception e) {
@@ -755,6 +833,7 @@ public abstract class BaseTableDataManager implements TableDataManager {
             .setSchema(indexLoadingConfig.getSchema()).setInstanceId(indexLoadingConfig.getInstanceId())
             .setTableDataDir(indexLoadingConfig.getTableDataDir()).setSegmentName(segmentName).setSegmentCrc(segmentCrc)
             .setSegmentTier(indexLoadingConfig.getSegmentTier())
+            .setInstanceTierConfigs(indexLoadingConfig.getInstanceTierConfigs())
             .setSegmentDirectoryConfigs(indexLoadingConfig.getSegmentDirectoryConfigs()).build();
     SegmentDirectoryLoader segmentDirectoryLoader =
         SegmentDirectoryLoaderRegistry.getSegmentDirectoryLoader(indexLoadingConfig.getSegmentDirectoryLoader());

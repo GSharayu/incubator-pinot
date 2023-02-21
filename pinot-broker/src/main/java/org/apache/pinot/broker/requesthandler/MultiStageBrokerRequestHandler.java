@@ -20,6 +20,7 @@ package org.apache.pinot.broker.requesthandler;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
@@ -31,6 +32,7 @@ import org.apache.pinot.broker.broker.AccessControlFactory;
 import org.apache.pinot.broker.queryquota.QueryQuotaManager;
 import org.apache.pinot.broker.routing.BrokerRoutingManager;
 import org.apache.pinot.common.config.provider.TableCache;
+import org.apache.pinot.common.datatable.DataTable;
 import org.apache.pinot.common.exception.QueryException;
 import org.apache.pinot.common.metrics.BrokerMeter;
 import org.apache.pinot.common.metrics.BrokerMetrics;
@@ -39,6 +41,7 @@ import org.apache.pinot.common.response.BrokerResponse;
 import org.apache.pinot.common.response.broker.BrokerResponseNative;
 import org.apache.pinot.common.response.broker.ResultTable;
 import org.apache.pinot.common.utils.DataSchema;
+import org.apache.pinot.common.utils.config.QueryOptionsUtils;
 import org.apache.pinot.common.utils.request.RequestUtils;
 import org.apache.pinot.core.transport.ServerInstance;
 import org.apache.pinot.query.QueryEnvironment;
@@ -63,23 +66,24 @@ import org.slf4j.LoggerFactory;
 
 public class MultiStageBrokerRequestHandler extends BaseBrokerRequestHandler {
   private static final Logger LOGGER = LoggerFactory.getLogger(MultiStageBrokerRequestHandler.class);
-  private static final long DEFAULT_TIMEOUT_NANO = 10_000_000_000L;
   private final String _reducerHostname;
   private final int _reducerPort;
+  private final long _defaultBrokerTimeoutMs;
 
   private final MailboxService<TransferableBlock> _mailboxService;
   private final QueryEnvironment _queryEnvironment;
   private final QueryDispatcher _queryDispatcher;
 
-  public MultiStageBrokerRequestHandler(PinotConfiguration config, BrokerRoutingManager routingManager,
-      AccessControlFactory accessControlFactory, QueryQuotaManager queryQuotaManager, TableCache tableCache,
-      BrokerMetrics brokerMetrics) {
-    super(config, routingManager, accessControlFactory, queryQuotaManager, tableCache, brokerMetrics);
+  public MultiStageBrokerRequestHandler(PinotConfiguration config, String brokerIdFromConfig,
+      BrokerRoutingManager routingManager, AccessControlFactory accessControlFactory,
+      QueryQuotaManager queryQuotaManager, TableCache tableCache, BrokerMetrics brokerMetrics) {
+    super(config, brokerIdFromConfig, routingManager, accessControlFactory, queryQuotaManager, tableCache,
+        brokerMetrics);
     LOGGER.info("Using Multi-stage BrokerRequestHandler.");
     String reducerHostname = config.getProperty(QueryConfig.KEY_OF_QUERY_RUNNER_HOSTNAME);
     if (reducerHostname == null) {
       // use broker ID as host name, but remove the
-      String brokerId = config.getProperty(CommonConstants.Broker.CONFIG_OF_BROKER_ID);
+      String brokerId = brokerIdFromConfig;
       brokerId = brokerId.startsWith(CommonConstants.Helix.PREFIX_OF_BROKER_INSTANCE) ? brokerId.substring(
           CommonConstants.Helix.SERVER_INSTANCE_PREFIX_LENGTH) : brokerId;
       brokerId = StringUtils.split(brokerId, "_").length > 1 ? StringUtils.split(brokerId, "_")[0] : brokerId;
@@ -87,11 +91,17 @@ public class MultiStageBrokerRequestHandler extends BaseBrokerRequestHandler {
     }
     _reducerHostname = reducerHostname;
     _reducerPort = config.getProperty(QueryConfig.KEY_OF_QUERY_RUNNER_PORT, QueryConfig.DEFAULT_QUERY_RUNNER_PORT);
+    _defaultBrokerTimeoutMs = config.getProperty(CommonConstants.Broker.CONFIG_OF_BROKER_TIMEOUT_MS,
+        CommonConstants.Broker.DEFAULT_BROKER_TIMEOUT_MS);
     _queryEnvironment = new QueryEnvironment(new TypeFactory(new TypeSystem()),
         CalciteSchemaBuilder.asRootSchema(new PinotCatalog(tableCache)),
-        new WorkerManager(_reducerHostname, _reducerPort, routingManager));
+        new WorkerManager(_reducerHostname, _reducerPort, routingManager), _tableCache);
     _queryDispatcher = new QueryDispatcher();
-    _mailboxService = MultiplexingMailboxService.newInstance(_reducerHostname, _reducerPort, config);
+
+    // it is OK to ignore the onDataAvailable callback because the broker top-level operators
+    // always run in-line (they don't have any scheduler)
+    _mailboxService = MultiplexingMailboxService.newInstance(_reducerHostname, _reducerPort, config, ignored -> {
+    });
 
     // TODO: move this to a startUp() function.
     _mailboxService.start();
@@ -102,7 +112,6 @@ public class MultiStageBrokerRequestHandler extends BaseBrokerRequestHandler {
       @Nullable RequesterIdentity requesterIdentity, RequestContext requestContext)
       throws Exception {
     long requestId = _requestIdGenerator.incrementAndGet();
-    requestContext.setBrokerId(_brokerId);
     requestContext.setRequestId(requestId);
     requestContext.setRequestArrivalTimeMillis(System.currentTimeMillis());
 
@@ -132,10 +141,13 @@ public class MultiStageBrokerRequestHandler extends BaseBrokerRequestHandler {
     LOGGER.debug("SQL query for request {}: {}", requestId, query);
 
     long compilationStartTimeNs;
+    long queryTimeoutMs;
     QueryPlan queryPlan;
     try {
       // Parse the request
       sqlNodeAndOptions = sqlNodeAndOptions != null ? sqlNodeAndOptions : RequestUtils.parseQuery(query, request);
+      Long timeoutMsFromQueryOption = QueryOptionsUtils.getTimeoutMs(sqlNodeAndOptions.getOptions());
+      queryTimeoutMs = timeoutMsFromQueryOption == null ? _defaultBrokerTimeoutMs : timeoutMsFromQueryOption;
       // Compile the request
       compilationStartTimeNs = System.nanoTime();
       switch (sqlNodeAndOptions.getSqlNode().getKind()) {
@@ -144,7 +156,7 @@ public class MultiStageBrokerRequestHandler extends BaseBrokerRequestHandler {
           return constructMultistageExplainPlan(query, plan);
         case SELECT:
         default:
-          queryPlan = _queryEnvironment.planQuery(query, sqlNodeAndOptions);
+          queryPlan = _queryEnvironment.planQuery(query, sqlNodeAndOptions, requestId);
           break;
       }
     } catch (Exception e) {
@@ -155,8 +167,10 @@ public class MultiStageBrokerRequestHandler extends BaseBrokerRequestHandler {
     }
 
     ResultTable queryResults;
+    Map<String, String> metadata = new HashMap<>();
     try {
-      queryResults = _queryDispatcher.submitAndReduce(requestId, queryPlan, _mailboxService, DEFAULT_TIMEOUT_NANO);
+      queryResults = _queryDispatcher.submitAndReduce(requestId, queryPlan, _mailboxService, queryTimeoutMs,
+          sqlNodeAndOptions.getOptions(), metadata);
     } catch (Exception e) {
       LOGGER.info("query execution failed", e);
       return new BrokerResponseNative(QueryException.getException(QueryException.QUERY_EXECUTION_ERROR, e));
@@ -166,13 +180,60 @@ public class MultiStageBrokerRequestHandler extends BaseBrokerRequestHandler {
     long executionEndTimeNs = System.nanoTime();
 
     // Set total query processing time
-    long totalTimeMs = TimeUnit.NANOSECONDS.toMillis(sqlNodeAndOptions.getParseTimeNs()
-        + (executionEndTimeNs - compilationStartTimeNs));
+    long totalTimeMs = TimeUnit.NANOSECONDS.toMillis(
+        sqlNodeAndOptions.getParseTimeNs() + (executionEndTimeNs - compilationStartTimeNs));
     brokerResponse.setTimeUsedMs(totalTimeMs);
     brokerResponse.setResultTable(queryResults);
+
+    attachMetadataToResponse(metadata, brokerResponse);
+
     requestContext.setQueryProcessingTime(totalTimeMs);
     augmentStatistics(requestContext, brokerResponse);
     return brokerResponse;
+  }
+
+  //TODO: Remove this duplicate method, use the implementation from V1 engine
+  private void attachMetadataToResponse(Map<String, String> stats, BrokerResponseNative brokerResponse) {
+    brokerResponse.setNumDocsScanned(
+        Long.parseLong(stats.getOrDefault(DataTable.MetadataKey.NUM_DOCS_SCANNED.getName(), "0")));
+    brokerResponse.setNumEntriesScannedInFilter(
+        Long.parseLong(stats.getOrDefault(DataTable.MetadataKey.NUM_ENTRIES_SCANNED_IN_FILTER.getName(), "0")));
+    brokerResponse.setNumEntriesScannedPostFilter(
+        Long.parseLong(stats.getOrDefault(DataTable.MetadataKey.NUM_ENTRIES_SCANNED_POST_FILTER.getName(), "0")));
+    brokerResponse.setTotalDocs(
+        Long.parseLong(stats.getOrDefault(DataTable.MetadataKey.TOTAL_DOCS.getName(), "0")));
+    brokerResponse.setNumSegmentsQueried(
+        Long.parseLong(stats.getOrDefault(DataTable.MetadataKey.NUM_SEGMENTS_QUERIED.getName(), "0")));
+    brokerResponse.setNumSegmentsProcessed(
+        Long.parseLong(stats.getOrDefault(DataTable.MetadataKey.NUM_SEGMENTS_PROCESSED.getName(), "0")));
+    brokerResponse.setNumSegmentsMatched(
+        Long.parseLong(stats.getOrDefault(DataTable.MetadataKey.NUM_SEGMENTS_MATCHED.getName(), "0")));
+    brokerResponse.setNumConsumingSegmentsQueried(
+        Long.parseLong(stats.getOrDefault(DataTable.MetadataKey.NUM_CONSUMING_SEGMENTS_QUERIED.getName(), "0")));
+
+    brokerResponse.setNumSegmentsPrunedByServer(
+        Long.parseLong(stats.getOrDefault(DataTable.MetadataKey.NUM_SEGMENTS_PRUNED_BY_SERVER.getName(), "0")));
+    brokerResponse.setNumSegmentsPrunedInvalid(
+        Long.parseLong(stats.getOrDefault(DataTable.MetadataKey.NUM_SEGMENTS_PRUNED_INVALID.getName(), "0")));
+    brokerResponse.setNumSegmentsPrunedByLimit(
+        Long.parseLong(stats.getOrDefault(DataTable.MetadataKey.NUM_SEGMENTS_PRUNED_BY_LIMIT.getName(), "0")));
+    brokerResponse.setNumSegmentsPrunedByValue(
+        Long.parseLong(stats.getOrDefault(DataTable.MetadataKey.NUM_SEGMENTS_PRUNED_BY_VALUE.getName(), "0")));
+    brokerResponse.setExplainPlanNumEmptyFilterSegments(
+        Long.parseLong(stats.getOrDefault(DataTable.MetadataKey.EXPLAIN_PLAN_NUM_EMPTY_FILTER_SEGMENTS.getName(),
+            "0")));
+    brokerResponse.setExplainPlanNumMatchAllFilterSegments(Long.parseLong(
+        stats.getOrDefault(DataTable.MetadataKey.EXPLAIN_PLAN_NUM_MATCH_ALL_FILTER_SEGMENTS.getName(), "0")));
+    brokerResponse.setNumConsumingSegmentsQueried(
+        Long.parseLong(stats.getOrDefault(DataTable.MetadataKey.NUM_CONSUMING_SEGMENTS_QUERIED.getName(), "0")));
+    brokerResponse.setMinConsumingFreshnessTimeMs(
+        Long.parseLong(stats.getOrDefault(DataTable.MetadataKey.MIN_CONSUMING_FRESHNESS_TIME_MS.getName(), "0")));
+    brokerResponse.setNumConsumingSegmentsProcessed(
+        Long.parseLong(stats.getOrDefault(DataTable.MetadataKey.NUM_CONSUMING_SEGMENTS_PROCESSED.getName(), "0")));
+    brokerResponse.setNumConsumingSegmentsMatched(
+        Long.parseLong(stats.getOrDefault(DataTable.MetadataKey.NUM_CONSUMING_SEGMENTS_MATCHED.getName(), "0")));
+    brokerResponse.setNumGroupsLimitReached(
+        Boolean.parseBoolean(stats.getOrDefault(DataTable.MetadataKey.NUM_GROUPS_LIMIT_REACHED.getName(), "0")));
   }
 
   private BrokerResponseNative constructMultistageExplainPlan(String sql, String plan) {

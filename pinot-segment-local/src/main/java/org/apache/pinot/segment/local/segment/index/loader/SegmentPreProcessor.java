@@ -107,26 +107,25 @@ public class SegmentPreProcessor implements AutoCloseable {
       List<IndexHandler> indexHandlers = new ArrayList<>();
       for (ColumnIndexType type : ColumnIndexType.values()) {
         IndexHandler handler =
-            IndexHandlerFactory.getIndexHandler(type, _segmentMetadata, _indexLoadingConfig, _schema);
+            IndexHandlerFactory.getIndexHandler(type, _segmentDirectory, _indexLoadingConfig, _schema);
         indexHandlers.add(handler);
+        // TODO: Find a way to ensure ForwardIndexHandler is always executed before other handlers instead of
+        // relying on enum ordering.
         handler.updateIndices(segmentWriter, indexCreatorProvider);
-        if (type == ColumnIndexType.FORWARD_INDEX) {
-          // TODO: Find a way to ensure ForwardIndexHandler is always executed before other handlers instead of
-          // relying on enum ordering.
-          // ForwardIndexHandler may modify the segment metadata while rewriting forward index to create a dictionary
-          // This new metadata is needed to construct other indexes like RangeIndex.
-          _segmentMetadata = new SegmentMetadataImpl(indexDir);
-          _segmentDirectory.reloadMetadata();
-        }
-      }
-
-      // Perform post-cleanup operations on the index handlers
-      for (IndexHandler handler : indexHandlers) {
-        handler.postUpdateIndicesCleanup(segmentWriter);
+        // ForwardIndexHandler may modify the segment metadata while rewriting forward index to create / remove a
+        // dictionary. Other IndexHandler classes may modify the segment metadata while creating a temporary forward
+        // index to generate their respective indexes from if the forward index was disabled. This new metadata is
+        // needed to construct other indexes like RangeIndex.
+        _segmentMetadata = _segmentDirectory.getSegmentMetadata();
       }
 
       // Create/modify/remove star-trees if required.
       processStarTrees(indexDir);
+
+      // Perform post-cleanup operations on the index handlers. This should be called after processing the startrees
+      for (IndexHandler handler : indexHandlers) {
+        handler.postUpdateIndicesCleanup(segmentWriter);
+      }
 
       // Add min/max value to column metadata according to the prune mode.
       // For star-tree index, because it can only increase the range, so min/max value can still be used in pruner.
@@ -166,7 +165,7 @@ public class SegmentPreProcessor implements AutoCloseable {
       }
       // Check if there is need to update single-column indices, like inverted index, json index etc.
       for (ColumnIndexType type : ColumnIndexType.values()) {
-        if (IndexHandlerFactory.getIndexHandler(type, _segmentMetadata, _indexLoadingConfig, _schema)
+        if (IndexHandlerFactory.getIndexHandler(type, _segmentDirectory, _indexLoadingConfig, _schema)
             .needUpdateIndices(segmentReader)) {
           LOGGER.info("Found index type: {} needs updates", type);
           return true;
@@ -208,9 +207,10 @@ public class SegmentPreProcessor implements AutoCloseable {
     List<StarTreeV2Metadata> starTreeMetadataList = _segmentMetadata.getStarTreeV2MetadataList();
     // There are existing star-trees, but if they match the builder configs exactly,
     // then there is no need to generate the star-trees
-    if (starTreeMetadataList != null && !StarTreeBuilderUtils
-        .shouldRemoveExistingStarTrees(starTreeBuilderConfigs, starTreeMetadataList)) {
-      return false;
+
+    // We need reprocessing if existing configs are to be removed, or new configs have been added
+    if (starTreeMetadataList != null) {
+      return StarTreeBuilderUtils.shouldRemoveExistingStarTrees(starTreeBuilderConfigs, starTreeMetadataList);
     }
     return !starTreeBuilderConfigs.isEmpty();
   }

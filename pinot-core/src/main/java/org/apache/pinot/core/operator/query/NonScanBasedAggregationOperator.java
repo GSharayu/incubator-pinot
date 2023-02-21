@@ -100,7 +100,11 @@ public class NonScanBasedAggregationOperator extends BaseOperator<AggregationRes
           result = new MinMaxRangePair(getMinValue(dataSource), getMaxValue(dataSource));
           break;
         case DISTINCTCOUNT:
+        case DISTINCTSUM:
+        case DISTINCTAVG:
         case DISTINCTCOUNTMV:
+        case DISTINCTSUMMV:
+        case DISTINCTAVGMV:
           result = getDistinctValueSet(Objects.requireNonNull(dataSource.getDictionary()));
           break;
         case DISTINCTCOUNTHLL:

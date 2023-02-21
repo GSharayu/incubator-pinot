@@ -391,7 +391,7 @@ class SingleFileIndexDirectory extends ColumnIndexDirectory {
 
   @Override
   public String toString() {
-    return _segmentDirectory.toString() + "/" + _indexFile.toString();
+    return _indexFile.toString();
   }
 
   /**

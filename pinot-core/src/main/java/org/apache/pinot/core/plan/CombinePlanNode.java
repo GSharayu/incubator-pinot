@@ -28,15 +28,22 @@ import java.util.concurrent.Phaser;
 import java.util.concurrent.TimeUnit;
 import javax.annotation.Nullable;
 import org.apache.pinot.common.proto.Server;
+import org.apache.pinot.common.request.context.ExpressionContext;
+import org.apache.pinot.common.request.context.OrderByExpressionContext;
 import org.apache.pinot.core.common.Operator;
 import org.apache.pinot.core.operator.combine.AggregationCombineOperator;
 import org.apache.pinot.core.operator.combine.BaseCombineOperator;
 import org.apache.pinot.core.operator.combine.CombineOperatorUtils;
 import org.apache.pinot.core.operator.combine.DistinctCombineOperator;
 import org.apache.pinot.core.operator.combine.GroupByCombineOperator;
+import org.apache.pinot.core.operator.combine.MinMaxValueBasedSelectionOrderByCombineOperator;
 import org.apache.pinot.core.operator.combine.SelectionOnlyCombineOperator;
 import org.apache.pinot.core.operator.combine.SelectionOrderByCombineOperator;
+import org.apache.pinot.core.operator.streaming.StreamingAggregationCombineOperator;
+import org.apache.pinot.core.operator.streaming.StreamingDistinctCombineOperator;
+import org.apache.pinot.core.operator.streaming.StreamingGroupByCombineOperator;
 import org.apache.pinot.core.operator.streaming.StreamingSelectionOnlyCombineOperator;
+import org.apache.pinot.core.operator.streaming.StreamingSelectionOrderByCombineOperator;
 import org.apache.pinot.core.query.request.context.QueryContext;
 import org.apache.pinot.core.query.request.context.utils.QueryContextUtils;
 import org.apache.pinot.core.util.trace.TraceCallable;
@@ -172,29 +179,54 @@ public class CombinePlanNode implements PlanNode {
       }
     }
 
-    if (_streamObserver != null && QueryContextUtils.isSelectionOnlyQuery(_queryContext)) {
-      // Streaming query (only support selection only)
-      return new StreamingSelectionOnlyCombineOperator(operators, _queryContext, _executorService, _streamObserver);
-    }
-    if (QueryContextUtils.isAggregationQuery(_queryContext)) {
-      if (_queryContext.getGroupByExpressions() == null) {
-        // Aggregation only
-        return new AggregationCombineOperator(operators, _queryContext, _executorService);
+    if (_streamObserver != null) {
+      if (QueryContextUtils.isAggregationQuery(_queryContext)) {
+        if (_queryContext.getGroupByExpressions() == null) {
+          // Aggregation only
+          return new StreamingAggregationCombineOperator(operators, _queryContext, _executorService);
+        } else {
+          // Aggregation group-by
+          return new StreamingGroupByCombineOperator(operators, _queryContext, _executorService);
+        }
+      } else if (QueryContextUtils.isSelectionQuery(_queryContext)) {
+        if (_queryContext.getLimit() == 0 || _queryContext.getOrderByExpressions() == null) {
+          // Streaming query (special handling to support selection only)
+          return new StreamingSelectionOnlyCombineOperator(operators, _queryContext, _executorService);
+        } else {
+          // Selection order-by
+          return new StreamingSelectionOrderByCombineOperator(operators, _queryContext, _executorService);
+        }
       } else {
-        // Aggregation group-by
-        return new GroupByCombineOperator(operators, _queryContext, _executorService);
-      }
-    } else if (QueryContextUtils.isSelectionQuery(_queryContext)) {
-      if (_queryContext.getLimit() == 0 || _queryContext.getOrderByExpressions() == null) {
-        // Selection only
-        return new SelectionOnlyCombineOperator(operators, _queryContext, _executorService);
-      } else {
-        // Selection order-by
-        return new SelectionOrderByCombineOperator(operators, _queryContext, _executorService);
+        assert QueryContextUtils.isDistinctQuery(_queryContext);
+        return new StreamingDistinctCombineOperator(operators, _queryContext, _executorService);
       }
     } else {
-      assert QueryContextUtils.isDistinctQuery(_queryContext);
-      return new DistinctCombineOperator(operators, _queryContext, _executorService);
+      if (QueryContextUtils.isAggregationQuery(_queryContext)) {
+        if (_queryContext.getGroupByExpressions() == null) {
+          // Aggregation only
+          return new AggregationCombineOperator(operators, _queryContext, _executorService);
+        } else {
+          // Aggregation group-by
+          return new GroupByCombineOperator(operators, _queryContext, _executorService);
+        }
+      } else if (QueryContextUtils.isSelectionQuery(_queryContext)) {
+        if (_queryContext.getLimit() == 0 || _queryContext.getOrderByExpressions() == null) {
+          // Selection only
+          return new SelectionOnlyCombineOperator(operators, _queryContext, _executorService);
+        } else {
+          // Selection order-by
+          List<OrderByExpressionContext> orderByExpressions = _queryContext.getOrderByExpressions();
+          assert orderByExpressions != null;
+          if (orderByExpressions.get(0).getExpression().getType() == ExpressionContext.Type.IDENTIFIER) {
+            return new MinMaxValueBasedSelectionOrderByCombineOperator(operators, _queryContext, _executorService);
+          } else {
+            return new SelectionOrderByCombineOperator(operators, _queryContext, _executorService);
+          }
+        }
+      } else {
+        assert QueryContextUtils.isDistinctQuery(_queryContext);
+        return new DistinctCombineOperator(operators, _queryContext, _executorService);
+      }
     }
   }
 }

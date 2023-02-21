@@ -21,8 +21,13 @@ package org.apache.calcite.sql.fun;
 import java.lang.reflect.Field;
 import java.util.ArrayList;
 import java.util.List;
+import org.apache.calcite.sql.SqlAggFunction;
 import org.apache.calcite.sql.SqlFunction;
+import org.apache.calcite.sql.SqlFunctionCategory;
+import org.apache.calcite.sql.SqlKind;
 import org.apache.calcite.sql.SqlOperator;
+import org.apache.calcite.sql.type.OperandTypes;
+import org.apache.calcite.sql.type.ReturnTypes;
 import org.apache.calcite.sql.validate.SqlNameMatchers;
 import org.apache.calcite.util.Util;
 import org.checkerframework.checker.nullness.qual.MonotonicNonNull;
@@ -39,11 +44,24 @@ import org.checkerframework.checker.nullness.qual.MonotonicNonNull;
  *   <li>Still maintain minimum customization and benefit from Calcite's original operator table setting.</li>
  * </ul>
  */
+@SuppressWarnings("unused") // unused fields are accessed by reflection
 public class PinotOperatorTable extends SqlStdOperatorTable {
 
   private static @MonotonicNonNull PinotOperatorTable _instance;
 
   public static final SqlFunction COALESCE = new PinotSqlCoalesceFunction();
+  public static final SqlFunction SKEWNESS_REDUCE = new SqlFunction("SKEWNESS_REDUCE", SqlKind.OTHER_FUNCTION,
+      ReturnTypes.DOUBLE, null, OperandTypes.BINARY, SqlFunctionCategory.USER_DEFINED_FUNCTION);
+  public static final SqlFunction KURTOSIS_REDUCE = new SqlFunction("KURTOSIS_REDUCE", SqlKind.OTHER_FUNCTION,
+      ReturnTypes.DOUBLE, null, OperandTypes.BINARY, SqlFunctionCategory.USER_DEFINED_FUNCTION);
+  public static final SqlFunction COUNT_DISTINCT_REDUCE = new SqlFunction("COUNT_DISTINCT_REDUCE",
+      SqlKind.OTHER_FUNCTION, ReturnTypes.INTEGER, null, OperandTypes.BINARY,
+      SqlFunctionCategory.USER_DEFINED_FUNCTION);
+
+  public static final SqlAggFunction BOOL_AND = PinotBoolAndAggregateFunction.INSTANCE;
+  public static final SqlAggFunction BOOL_OR = PinotBoolOrAggregateFunction.INSTANCE;
+  public static final SqlAggFunction SKEWNESS = PinotSkewnessAggregateFunction.INSTANCE;
+  public static final SqlAggFunction KURTOSIS = PinotKurtosisAggregateFunction.INSTANCE;
 
   // TODO: clean up lazy init by using Suppliers.memorized(this::computeInstance) and make getter wrapped around
   // supplier instance. this should replace all lazy init static objects in the codebase

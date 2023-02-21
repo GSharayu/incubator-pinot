@@ -18,47 +18,83 @@
  */
 package org.apache.pinot.query.mailbox;
 
-import com.google.common.base.Preconditions;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
-import java.util.Map;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Consumer;
 import org.apache.pinot.common.datablock.DataBlock;
 import org.apache.pinot.common.datablock.MetadataBlock;
 import org.apache.pinot.common.utils.DataSchema;
+import org.apache.pinot.query.routing.VirtualServerAddress;
 import org.apache.pinot.query.runtime.blocks.TransferableBlock;
+import org.apache.pinot.query.service.QueryConfig;
+import org.apache.pinot.query.testutils.QueryTestUtils;
+import org.apache.pinot.spi.env.PinotConfiguration;
 import org.apache.pinot.util.TestUtils;
 import org.testng.Assert;
+import org.testng.annotations.AfterClass;
+import org.testng.annotations.BeforeClass;
 import org.testng.annotations.Test;
 
 
-public class GrpcMailboxServiceTest extends GrpcMailboxServiceTestBase {
+public class GrpcMailboxServiceTest {
 
+  private static final int DEFAULT_SENDER_STAGE_ID = 0;
+  private static final int DEFAULT_RECEIVER_STAGE_ID = 1;
   private static final DataSchema TEST_DATA_SCHEMA = new DataSchema(new String[]{"foo", "bar"},
       new DataSchema.ColumnDataType[]{DataSchema.ColumnDataType.INT, DataSchema.ColumnDataType.STRING});
 
-  @Test
+  private final AtomicReference<Consumer<MailboxIdentifier>> _mail1GotData = new AtomicReference<>(ignored -> { });
+  private final AtomicReference<Consumer<MailboxIdentifier>> _mail2GotData = new AtomicReference<>(ignored -> { });
+
+  private GrpcMailboxService _mailboxService1;
+  private GrpcMailboxService _mailboxService2;
+
+  @BeforeClass
+  public void setUp()
+      throws Exception {
+    PinotConfiguration extraConfig = new PinotConfiguration(Collections.singletonMap(
+        QueryConfig.KEY_OF_MAX_INBOUND_QUERY_DATA_BLOCK_SIZE_BYTES, 4_000_000));
+
+    _mailboxService1 = new GrpcMailboxService(
+        "localhost", QueryTestUtils.getAvailablePort(), extraConfig, id -> _mail1GotData.get().accept(id));
+    _mailboxService1.start();
+
+    _mailboxService2 = new GrpcMailboxService(
+        "localhost", QueryTestUtils.getAvailablePort(), extraConfig, id -> _mail2GotData.get().accept(id));
+    _mailboxService2.start();
+  }
+
+  @AfterClass
+  public void tearDown() {
+    _mailboxService1.shutdown();
+    _mailboxService2.shutdown();
+  }
+
+  @Test(timeOut = 10_000L)
   public void testHappyPath()
       throws Exception {
-    Preconditions.checkState(_mailboxServices.size() >= 2);
-    Map.Entry<Integer, GrpcMailboxService> sender = _mailboxServices.firstEntry();
-    Map.Entry<Integer, GrpcMailboxService> receiver = _mailboxServices.lastEntry();
-    StringMailboxIdentifier mailboxId = new StringMailboxIdentifier(
-        "happypath", "localhost", sender.getKey(), "localhost", receiver.getKey());
-    SendingMailbox<TransferableBlock> sendingMailbox = sender.getValue().getSendingMailbox(mailboxId);
-    ReceivingMailbox<TransferableBlock> receivingMailbox = receiver.getValue().getReceivingMailbox(mailboxId);
+    // Given:
+    JsonMailboxIdentifier mailboxId = new JsonMailboxIdentifier(
+        "happypath",
+        new VirtualServerAddress("localhost", _mailboxService1.getMailboxPort(), 0),
+        new VirtualServerAddress("localhost", _mailboxService2.getMailboxPort(), 0),
+        DEFAULT_SENDER_STAGE_ID, DEFAULT_RECEIVER_STAGE_ID);
+    SendingMailbox<TransferableBlock> sendingMailbox = _mailboxService1.getSendingMailbox(mailboxId);
+    ReceivingMailbox<TransferableBlock> receivingMailbox = _mailboxService2.getReceivingMailbox(mailboxId);
+    CountDownLatch gotData = new CountDownLatch(1);
+    _mail2GotData.set(ignored -> gotData.countDown());
 
-    // create mock object
+    // When:
     TransferableBlock testBlock = getTestTransferableBlock();
     sendingMailbox.send(testBlock);
-
-    // wait for receiving mailbox to be created.
-    TestUtils.waitForCondition(aVoid -> {
-      return receivingMailbox.isInitialized();
-    }, 5000L, "Receiving mailbox initialize failed!");
-
+    gotData.await();
     TransferableBlock receivedBlock = receivingMailbox.receive();
-    Assert.assertEquals(receivedBlock.getDataBlock().toBytes(), testBlock.getDataBlock().toBytes());
 
+    // Then:
+    Assert.assertEquals(receivedBlock.getDataBlock().toBytes(), testBlock.getDataBlock().toBytes());
     sendingMailbox.complete();
 
     TestUtils.waitForCondition(aVoid -> {
@@ -70,27 +106,28 @@ public class GrpcMailboxServiceTest extends GrpcMailboxServiceTestBase {
    * Simulates a case where the sender tries to send a very large message. The receiver should receive a
    * MetadataBlock with an exception to indicate failure.
    */
-  @Test
+  @Test(timeOut = 10_000L)
   public void testGrpcException()
       throws Exception {
-    Preconditions.checkState(_mailboxServices.size() >= 2);
-    Map.Entry<Integer, GrpcMailboxService> sender = _mailboxServices.firstEntry();
-    Map.Entry<Integer, GrpcMailboxService> receiver = _mailboxServices.lastEntry();
-    StringMailboxIdentifier mailboxId = new StringMailboxIdentifier(
-        "exception", "localhost", sender.getKey(), "localhost", receiver.getKey());
-    GrpcSendingMailbox sendingMailbox = (GrpcSendingMailbox) sender.getValue().getSendingMailbox(mailboxId);
-    GrpcReceivingMailbox receivingMailbox = (GrpcReceivingMailbox) receiver.getValue().getReceivingMailbox(mailboxId);
-
-    // create mock object
+    // Given:
+    JsonMailboxIdentifier mailboxId = new JsonMailboxIdentifier(
+        "exception",
+        new VirtualServerAddress("localhost", _mailboxService1.getMailboxPort(), 0),
+        new VirtualServerAddress("localhost", _mailboxService2.getMailboxPort(), 0),
+        DEFAULT_SENDER_STAGE_ID,
+        DEFAULT_RECEIVER_STAGE_ID);
+    SendingMailbox<TransferableBlock> sendingMailbox = _mailboxService1.getSendingMailbox(mailboxId);
+    ReceivingMailbox<TransferableBlock> receivingMailbox = _mailboxService2.getReceivingMailbox(mailboxId);
+    CountDownLatch gotData = new CountDownLatch(1);
+    _mail2GotData.set(ignored -> gotData.countDown());
     TransferableBlock testContent = getTooLargeTransferableBlock();
+
+    // When:
     sendingMailbox.send(testContent);
-
-    // wait for receiving mailbox to be created.
-    TestUtils.waitForCondition(aVoid -> {
-      return receivingMailbox.isInitialized();
-    }, 5000L, "Receiving mailbox initialize failed!");
-
+    gotData.await();
     TransferableBlock receivedContent = receivingMailbox.receive();
+
+    // Then:
     Assert.assertNotNull(receivedContent);
     DataBlock receivedDataBlock = receivedContent.getDataBlock();
     Assert.assertTrue(receivedDataBlock instanceof MetadataBlock);

@@ -18,16 +18,22 @@
  */
 package org.apache.pinot.query.mailbox;
 
+import org.apache.pinot.query.routing.VirtualServerAddress;
 import org.mockito.Mockito;
 import org.testng.Assert;
 import org.testng.annotations.Test;
 
 
 public class MultiplexingMailboxServiceTest {
-  private static final StringMailboxIdentifier LOCAL_MAILBOX_ID = new StringMailboxIdentifier(
-      "localJobId", "localhost", 0, "localhost", 0);
-  private static final StringMailboxIdentifier NON_LOCAL_MAILBOX_ID = new StringMailboxIdentifier(
-      "localJobId", "localhost", 0, "localhost", 1);
+
+  private static final int DEFAULT_SENDER_STAGE_ID = 0;
+  private static final int DEFAULT_RECEIVER_STAGE_ID = 1;
+  private static final JsonMailboxIdentifier LOCAL_MAILBOX_ID = new JsonMailboxIdentifier(
+      "localJobId", new VirtualServerAddress("localhost", 0, 0), new VirtualServerAddress("localhost", 0, 0),
+      DEFAULT_SENDER_STAGE_ID, DEFAULT_RECEIVER_STAGE_ID);
+  private static final JsonMailboxIdentifier NON_LOCAL_MAILBOX_ID = new JsonMailboxIdentifier(
+      "localJobId", new VirtualServerAddress("localhost", 0, 0), new VirtualServerAddress("localhost", 1, 0),
+      DEFAULT_SENDER_STAGE_ID, DEFAULT_RECEIVER_STAGE_ID);
 
   @Test
   public void testHappyPath() {

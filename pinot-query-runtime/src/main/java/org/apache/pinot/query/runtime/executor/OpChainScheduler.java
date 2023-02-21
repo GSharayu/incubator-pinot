@@ -32,8 +32,9 @@ public interface OpChainScheduler {
 
   /**
    * @param operatorChain the operator chain to register
+   * @param isNew         whether or not this is the first time the operator is scheduled
    */
-  void register(OpChain operatorChain);
+  void register(OpChain operatorChain, boolean isNew);
 
   /**
    * This method is called whenever {@code mailbox} has new data available to consume,
@@ -42,6 +43,12 @@ public interface OpChainScheduler {
    * @param mailbox the mailbox ID
    */
   void onDataAvailable(MailboxIdentifier mailbox);
+
+  /**
+   * This method is called when scheduler is terminating. It should clean up all of the resources if there are any.
+   * register() and onDataAvailable() shouldn't be called anymore after shutDown is called.
+   */
+  void shutDown();
 
   /**
    * @return whether or not there is any work for the scheduler to do
@@ -54,4 +61,9 @@ public interface OpChainScheduler {
    *         prior to this call
    */
   OpChain next();
+
+  /**
+   * @return the number of operator chains that are awaiting execution
+   */
+  int size();
 }

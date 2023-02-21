@@ -55,7 +55,8 @@ import org.slf4j.LoggerFactory;
  * </ul>
  */
 @SuppressWarnings({"rawtypes", "unchecked"})
-public class MinMaxValueBasedSelectionOrderByCombineOperator extends BaseCombineOperator<SelectionResultsBlock> {
+public class MinMaxValueBasedSelectionOrderByCombineOperator
+    extends BaseSingleBlockCombineOperator<SelectionResultsBlock> {
   private static final Logger LOGGER = LoggerFactory.getLogger(MinMaxValueBasedSelectionOrderByCombineOperator.class);
 
   private static final String EXPLAIN_NAME = "COMBINE_SELECT_ORDERBY_MINMAX";
@@ -72,9 +73,9 @@ public class MinMaxValueBasedSelectionOrderByCombineOperator extends BaseCombine
   private final List<MinMaxValueContext> _minMaxValueContexts;
   private final AtomicReference<Comparable> _globalBoundaryValue = new AtomicReference<>();
 
-  MinMaxValueBasedSelectionOrderByCombineOperator(List<Operator> operators, QueryContext queryContext,
+  public MinMaxValueBasedSelectionOrderByCombineOperator(List<Operator> operators, QueryContext queryContext,
       ExecutorService executorService) {
-    super(operators, queryContext, executorService);
+    super(null, operators, queryContext, executorService);
     _endOperatorId = new AtomicInteger(_numOperators);
     _numRowsToKeep = queryContext.getLimit() + queryContext.getOffset();
 
@@ -300,7 +301,6 @@ public class MinMaxValueBasedSelectionOrderByCombineOperator extends BaseCombine
     return mergedBlock;
   }
 
-  @Override
   protected void mergeResultsBlocks(SelectionResultsBlock mergedBlock, SelectionResultsBlock blockToMerge) {
     DataSchema mergedDataSchema = mergedBlock.getDataSchema();
     DataSchema dataSchemaToMerge = blockToMerge.getDataSchema();
@@ -322,7 +322,6 @@ public class MinMaxValueBasedSelectionOrderByCombineOperator extends BaseCombine
     SelectionOperatorUtils.mergeWithOrdering(mergedRows, rowsToMerge, _numRowsToKeep);
   }
 
-  @Override
   protected SelectionResultsBlock convertToMergeableBlock(SelectionResultsBlock resultsBlock) {
     // This may create a copy or return the same instance. Anyway, this operator is the owner of the
     // value now, so it can mutate it.

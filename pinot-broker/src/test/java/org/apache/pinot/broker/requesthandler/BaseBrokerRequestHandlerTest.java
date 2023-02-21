@@ -199,14 +199,14 @@ public class BaseBrokerRequestHandlerTest {
     RoutingTable rt = mock(RoutingTable.class);
     when(rt.getServerInstanceToSegmentsMap()).thenReturn(Collections
         .singletonMap(new ServerInstance(new InstanceConfig("server01_9000")), Collections.singletonList("segment01")));
-    when(routingManager.getRoutingTable(any())).thenReturn(rt);
+    when(routingManager.getRoutingTable(any(), Mockito.anyLong())).thenReturn(rt);
     QueryQuotaManager queryQuotaManager = mock(QueryQuotaManager.class);
     when(queryQuotaManager.acquire(anyString())).thenReturn(true);
     CountDownLatch latch = new CountDownLatch(1);
     PinotConfiguration config =
         new PinotConfiguration(Collections.singletonMap("pinot.broker.enable.query.cancellation", "true"));
     BaseBrokerRequestHandler requestHandler =
-        new BaseBrokerRequestHandler(config, routingManager, new AllowAllAccessControlFactory(),
+        new BaseBrokerRequestHandler(config, null, routingManager, new AllowAllAccessControlFactory(),
             queryQuotaManager, tableCache,
             new BrokerMetrics("", PinotMetricUtils.getPinotMetricsRegistry(), true, Collections.emptySet())) {
           @Override

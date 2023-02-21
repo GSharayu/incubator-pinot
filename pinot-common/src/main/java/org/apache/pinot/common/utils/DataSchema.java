@@ -22,6 +22,7 @@ import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.annotation.JsonPropertyOrder;
+import com.google.common.collect.Ordering;
 import it.unimi.dsi.fastutil.doubles.DoubleArrayList;
 import java.io.ByteArrayOutputStream;
 import java.io.DataOutputStream;
@@ -272,6 +273,7 @@ public class DataSchema {
     BYTES_ARRAY(new byte[0][]);
 
     private static final EnumSet<ColumnDataType> NUMERIC_TYPES = EnumSet.of(INT, LONG, FLOAT, DOUBLE, BIG_DECIMAL);
+    private static final Ordering<ColumnDataType> NUMERIC_TYPE_ORDERING = Ordering.explicit(INT, LONG, FLOAT, DOUBLE);
     private static final EnumSet<ColumnDataType> INTEGRAL_TYPES = EnumSet.of(INT, LONG);
     private static final EnumSet<ColumnDataType> ARRAY_TYPES =
         EnumSet.of(INT_ARRAY, LONG_ARRAY, FLOAT_ARRAY, DOUBLE_ARRAY, STRING_ARRAY, BOOLEAN_ARRAY, TIMESTAMP_ARRAY,
@@ -333,6 +335,25 @@ public class DataSchema {
           this.isNumberArray() && anotherColumnDataType.isNumberArray());
     }
 
+    /**
+     * Determine if the candidate {@link ColumnDataType} is convertable to this type via the conversion API.
+     *
+     * @param subTypeCandidate candidate column data type to validate.
+     * @return true if it is a sub-type.
+     * @see DataSchema.ColumnDataType#convert(Object)
+     */
+    public boolean isSuperTypeOf(ColumnDataType subTypeCandidate) {
+      if (this.isNumber() && subTypeCandidate.isNumber() && this != BIG_DECIMAL && subTypeCandidate != BIG_DECIMAL) {
+        // NUMBER subtype check using type hoisting rules defined in NUMERIC_TYPE_ORDERING
+        return NUMERIC_TYPE_ORDERING.max(this, subTypeCandidate) == this;
+      } else if (subTypeCandidate == BOOLEAN) {
+        // BOOLEAN type is sub-type of any number type, checking whether it is equal to 1.
+        return this == subTypeCandidate || (this.isNumber() && this != BIG_DECIMAL);
+      } else {
+        return this == subTypeCandidate;
+      }
+    }
+
     public DataType toDataType() {
       switch (this) {
         case INT:
@@ -377,7 +398,7 @@ public class DataSchema {
         case BIG_DECIMAL:
           return (BigDecimal) value;
         case BOOLEAN:
-          return (Integer) value == 1;
+          return ((Number) value).intValue() == 1;
         case TIMESTAMP:
           return new Timestamp((long) value);
         case STRING:
@@ -401,6 +422,8 @@ public class DataSchema {
           return toTimestampArray(value);
         case BYTES_ARRAY:
           return (byte[][]) value;
+        case OBJECT:
+          return (Serializable) value;
         default:
           throw new IllegalStateException(String.format("Cannot convert: '%s' to type: %s", value, this));
       }
@@ -439,7 +462,7 @@ public class DataSchema {
         case BIG_DECIMAL:
           return (BigDecimal) value;
         case BOOLEAN:
-          return (Integer) value == 1;
+          return ((Number) value).intValue() == 1;
         case TIMESTAMP:
           return new Timestamp((long) value).toString();
         case STRING:

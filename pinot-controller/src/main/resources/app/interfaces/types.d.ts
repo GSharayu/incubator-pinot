@@ -85,6 +85,8 @@ declare module 'Models' {
     tables: Array<string>;
   };
 
+  export type QuerySchemas = Array<string>;
+
   export type TableSchema = {
     dimensionFieldSpecs: Array<schema>;
     metricFieldSpecs?: Array<schema>;
@@ -221,6 +223,8 @@ declare module 'Models' {
     }
   }
 
+  export type TableSortFunction = (a: any, b: any, column: string, index: number, order: boolean) => number;
+
   export const enum SEGMENT_STATUS {
     ONLINE = "ONLINE",
     OFFLINE = "OFFLINE",
@@ -231,6 +235,6 @@ declare module 'Models' {
   export const enum DISPLAY_SEGMENT_STATUS {
     BAD = "BAD",
     GOOD = "GOOD",
-    PARTIAL = "PARTIAL",
+    UPDATING = "UPDATING",
   }
 }

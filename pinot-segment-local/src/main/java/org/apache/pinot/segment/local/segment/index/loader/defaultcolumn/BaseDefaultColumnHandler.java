@@ -22,7 +22,6 @@ import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Preconditions;
 import java.io.Closeable;
 import java.io.File;
-import java.io.FileOutputStream;
 import java.io.IOException;
 import java.math.BigDecimal;
 import java.util.ArrayList;
@@ -43,6 +42,8 @@ import org.apache.pinot.segment.local.segment.creator.impl.fwd.MultiValueUnsorte
 import org.apache.pinot.segment.local.segment.creator.impl.fwd.SingleValueSortedForwardIndexCreator;
 import org.apache.pinot.segment.local.segment.creator.impl.fwd.SingleValueUnsortedForwardIndexCreator;
 import org.apache.pinot.segment.local.segment.creator.impl.inv.BitSlicedRangeIndexCreator;
+import org.apache.pinot.segment.local.segment.creator.impl.inv.OffHeapBitmapInvertedIndexCreator;
+import org.apache.pinot.segment.local.segment.creator.impl.nullvalue.NullValueVectorCreator;
 import org.apache.pinot.segment.local.segment.creator.impl.stats.BytesColumnPredIndexStatsCollector;
 import org.apache.pinot.segment.local.segment.creator.impl.stats.DoubleColumnPreIndexStatsCollector;
 import org.apache.pinot.segment.local.segment.creator.impl.stats.FloatColumnPreIndexStatsCollector;
@@ -53,15 +54,17 @@ import org.apache.pinot.segment.local.segment.index.loader.IndexLoadingConfig;
 import org.apache.pinot.segment.local.segment.index.loader.LoaderUtils;
 import org.apache.pinot.segment.local.segment.readers.PinotSegmentColumnReader;
 import org.apache.pinot.segment.spi.ColumnMetadata;
+import org.apache.pinot.segment.spi.SegmentMetadata;
 import org.apache.pinot.segment.spi.V1Constants;
 import org.apache.pinot.segment.spi.creator.ColumnIndexCreationInfo;
 import org.apache.pinot.segment.spi.creator.StatsCollectorConfig;
+import org.apache.pinot.segment.spi.index.creator.DictionaryBasedInvertedIndexCreator;
 import org.apache.pinot.segment.spi.index.creator.ForwardIndexCreator;
-import org.apache.pinot.segment.spi.index.metadata.SegmentMetadataImpl;
 import org.apache.pinot.segment.spi.index.reader.Dictionary;
 import org.apache.pinot.segment.spi.index.reader.ForwardIndexReader;
 import org.apache.pinot.segment.spi.store.ColumnIndexType;
 import org.apache.pinot.segment.spi.store.SegmentDirectory;
+import org.apache.pinot.segment.spi.utils.SegmentMetadataUtils;
 import org.apache.pinot.spi.config.table.TableConfig;
 import org.apache.pinot.spi.config.table.ingestion.TransformConfig;
 import org.apache.pinot.spi.data.FieldSpec;
@@ -112,26 +115,30 @@ public abstract class BaseDefaultColumnHandler implements DefaultColumnHandler {
   }
 
   protected final File _indexDir;
-  protected final SegmentMetadataImpl _segmentMetadata;
+  protected final SegmentMetadata _segmentMetadata;
   protected final IndexLoadingConfig _indexLoadingConfig;
   protected final Schema _schema;
   protected final SegmentDirectory.Writer _segmentWriter;
 
-  private final PropertiesConfiguration _segmentProperties;
+  // NOTE: _segmentProperties shouldn't be used when checking whether default column need to be created because at that
+  //       time _segmentMetadata might not be loaded from a local file
+  private PropertiesConfiguration _segmentProperties;
 
-  protected BaseDefaultColumnHandler(File indexDir, SegmentMetadataImpl segmentMetadata,
+  protected BaseDefaultColumnHandler(File indexDir, SegmentMetadata segmentMetadata,
       IndexLoadingConfig indexLoadingConfig, Schema schema, SegmentDirectory.Writer segmentWriter) {
     _indexDir = indexDir;
     _segmentMetadata = segmentMetadata;
     _indexLoadingConfig = indexLoadingConfig;
     _schema = schema;
     _segmentWriter = segmentWriter;
-    _segmentProperties = _segmentMetadata.getPropertiesConfiguration();
   }
 
   @Override
   public boolean needUpdateDefaultColumns() {
     Map<String, DefaultColumnAction> defaultColumnActionMap = computeDefaultColumnActionMap();
+    if (LOGGER.isDebugEnabled()) {
+      LOGGER.debug("Need to update default columns with actionMap: {}", defaultColumnActionMap);
+    }
     return !defaultColumnActionMap.isEmpty();
   }
 
@@ -143,11 +150,15 @@ public abstract class BaseDefaultColumnHandler implements DefaultColumnHandler {
       throws Exception {
     // Compute the action needed for each column.
     Map<String, DefaultColumnAction> defaultColumnActionMap = computeDefaultColumnActionMap();
+    if (LOGGER.isDebugEnabled()) {
+      LOGGER.debug("Update default columns with actionMap: {}", defaultColumnActionMap);
+    }
     if (defaultColumnActionMap.isEmpty()) {
       return;
     }
 
     // Update each default column based on the default column action.
+    _segmentProperties = SegmentMetadataUtils.getPropertiesConfiguration(_segmentMetadata);
     Iterator<Map.Entry<String, DefaultColumnAction>> entryIterator = defaultColumnActionMap.entrySet().iterator();
     while (entryIterator.hasNext()) {
       Map.Entry<String, DefaultColumnAction> entry = entryIterator.next();
@@ -195,13 +206,8 @@ public abstract class BaseDefaultColumnHandler implements DefaultColumnHandler {
     _segmentProperties.setProperty(V1Constants.MetadataKeys.Segment.METRICS, metricColumns);
     _segmentProperties.setProperty(V1Constants.MetadataKeys.Segment.DATETIME_COLUMNS, dateTimeColumns);
 
-    // Save the new metadata.
-    //
-    // Commons Configuration 1.10 does not support file path containing '%'.
-    // Explicitly providing the output stream for save bypasses the problem. */
-    try (FileOutputStream fileOutputStream = new FileOutputStream(_segmentProperties.getFile())) {
-      _segmentProperties.save(fileOutputStream);
-    }
+    // Save the new metadata
+    SegmentMetadataUtils.savePropertiesConfiguration(_segmentProperties);
   }
 
   /**
@@ -224,21 +230,6 @@ public abstract class BaseDefaultColumnHandler implements DefaultColumnHandler {
 
       if (columnMetadata != null) {
         // Column exists in the segment, check if we need to update the value.
-
-        if (_segmentWriter != null && !columnMetadata.isAutoGenerated()) {
-          // TODO: Add support for recreating forward index for a column with forward index disabled.
-          boolean forwardIndexDisabled = !_segmentWriter.hasIndexFor(column, ColumnIndexType.FORWARD_INDEX);
-          if (forwardIndexDisabled && !_indexLoadingConfig.getForwardIndexDisabledColumns()
-              .contains(column)) {
-            String failureMessage =
-                "Forward index disabled in segment: " + forwardIndexDisabled + " for column: " + column
-                    + " does not match forward index disabled flag: "
-                    + _indexLoadingConfig.getForwardIndexDisabledColumns().contains(column) + " in the TableConfig, "
-                    + "setting this flag on new columns or updating this flag to disable it is not supported at the "
-                    + "moment. Please backfill or refresh segments to use this feature.";
-            throw new RuntimeException(failureMessage);
-          }
-        }
 
         // Only check for auto-generated column.
         if (!columnMetadata.isAutoGenerated()) {
@@ -429,8 +420,6 @@ public abstract class BaseDefaultColumnHandler implements DefaultColumnHandler {
     if (!forwardIndexDisabled) {
       return;
     }
-    LOGGER.warn("Disabling forward index on a new column {} is currently not supported. Treating this as a no-op!",
-        column);
     FieldSpec fieldSpec = _schema.getFieldSpecFor(column);
     Preconditions.checkState(_indexLoadingConfig.getInvertedIndexColumns().contains(column),
           String.format("Inverted index must be enabled for forward index disabled column: %s", column));
@@ -456,7 +445,6 @@ public abstract class BaseDefaultColumnHandler implements DefaultColumnHandler {
 
   /**
    * Helper method to create the V1 indices (dictionary and forward index) for a column with default values.
-   * TODO: Add support for handling the forwardIndexDisabled flag. Today this flag is ignored for default columns
    */
   private void createDefaultValueColumnV1Indices(String column)
       throws Exception {
@@ -468,11 +456,8 @@ public abstract class BaseDefaultColumnHandler implements DefaultColumnHandler {
     Object defaultValue = fieldSpec.getDefaultNullValue();
     boolean isSingleValue = fieldSpec.isSingleValueField();
     int maxNumberOfMultiValueElements = isSingleValue ? 0 : 1;
-
-    // Validate that the forwardIndexDisabled flag, if enabled, is compatible with other indexes and configs
-    // For now the forwardIndexDisabled flag is ignored for default columns but will be handled as part of reload
-    // changes
     boolean forwardIndexDisabled = isForwardIndexDisabled(column);
+
     validateForwardIndexDisabledConfigsIfPresent(column, forwardIndexDisabled);
 
     Object sortedArray;
@@ -538,16 +523,40 @@ public abstract class BaseDefaultColumnHandler implements DefaultColumnHandler {
         }
       }
     } else {
-      // TODO: Add support to disable the forward index if the forwardIndexDisabled flag is true and the column is a
-      //       multi-value column.
       // Multi-value column.
 
-      try (
-          MultiValueUnsortedForwardIndexCreator mvFwdIndexCreator = new MultiValueUnsortedForwardIndexCreator(_indexDir,
-              fieldSpec.getName(), 1/*cardinality*/, totalDocs/*numDocs*/, totalDocs/*totalNumberOfValues*/)) {
-        int[] dictIds = {0};
-        for (int docId = 0; docId < totalDocs; docId++) {
-          mvFwdIndexCreator.putDictIdMV(dictIds);
+      if (forwardIndexDisabled) {
+        // Generate an inverted index instead of forward index for multi-value columns when forward index is disabled
+        try (DictionaryBasedInvertedIndexCreator creator = new OffHeapBitmapInvertedIndexCreator(_indexDir, fieldSpec,
+            1, totalDocs, totalDocs)) {
+          for (int docId = 0; docId < totalDocs; docId++) {
+            creator.add(0);
+          }
+          creator.seal();
+        }
+      } else {
+        try (MultiValueUnsortedForwardIndexCreator mvFwdIndexCreator = new MultiValueUnsortedForwardIndexCreator(
+            _indexDir, fieldSpec.getName(), 1/*cardinality*/, totalDocs/*numDocs*/,
+            totalDocs/*totalNumberOfValues*/)) {
+          int[] dictIds = {0};
+          for (int docId = 0; docId < totalDocs; docId++) {
+            mvFwdIndexCreator.putDictIdMV(dictIds);
+          }
+        }
+      }
+    }
+
+    if (_indexLoadingConfig.getTableConfig() != null
+        && _indexLoadingConfig.getTableConfig().getIndexingConfig() != null
+        && _indexLoadingConfig.getTableConfig().getIndexingConfig().isNullHandlingEnabled()) {
+      if (!_segmentWriter.hasIndexFor(column, ColumnIndexType.NULLVALUE_VECTOR)) {
+        try (NullValueVectorCreator nullValueVectorCreator =
+            new NullValueVectorCreator(_indexDir, fieldSpec.getName())) {
+          for (int docId = 0; docId < totalDocs; docId++) {
+            nullValueVectorCreator.setNull(docId);
+          }
+
+          nullValueVectorCreator.seal();
         }
       }
     }

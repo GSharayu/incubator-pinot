@@ -25,8 +25,8 @@ import java.util.PriorityQueue;
 import org.apache.pinot.common.datatable.DataTable;
 import org.apache.pinot.common.response.broker.ResultTable;
 import org.apache.pinot.common.utils.DataSchema;
-import org.apache.pinot.common.utils.DataSchema.ColumnDataType;
 import org.apache.pinot.core.query.request.context.QueryContext;
+import org.apache.pinot.spi.trace.Tracing;
 import org.roaringbitmap.RoaringBitmap;
 
 
@@ -112,11 +112,13 @@ public class SelectionOperatorService {
             }
           }
           SelectionOperatorUtils.addToPriorityQueue(row, _rows, _numRowsToKeep);
+          Tracing.ThreadAccountantOps.sampleAndCheckInterruptionPeriodically(rowId);
         }
       } else {
         for (int rowId = 0; rowId < numRows; rowId++) {
           Object[] row = SelectionOperatorUtils.extractRowFromDataTable(dataTable, rowId);
           SelectionOperatorUtils.addToPriorityQueue(row, _rows, _numRowsToKeep);
+          Tracing.ThreadAccountantOps.sampleAndCheckInterruptionPeriodically(rowId);
         }
       }
     }
@@ -131,18 +133,7 @@ public class SelectionOperatorService {
   public ResultTable renderResultTableWithOrdering() {
     int[] columnIndices = SelectionOperatorUtils.getColumnIndices(_selectionColumns, _dataSchema);
     int numColumns = columnIndices.length;
-
-    // Construct the result data schema
-    String[] columnNames = _dataSchema.getColumnNames();
-    ColumnDataType[] columnDataTypes = _dataSchema.getColumnDataTypes();
-    String[] resultColumnNames = new String[numColumns];
-    ColumnDataType[] resultColumnDataTypes = new ColumnDataType[numColumns];
-    for (int i = 0; i < numColumns; i++) {
-      int columnIndex = columnIndices[i];
-      resultColumnNames[i] = columnNames[columnIndex];
-      resultColumnDataTypes[i] = columnDataTypes[columnIndex];
-    }
-    DataSchema resultDataSchema = new DataSchema(resultColumnNames, resultColumnDataTypes);
+    DataSchema resultDataSchema = SelectionOperatorUtils.getSchemaForProjection(_dataSchema, columnIndices);
 
     // Extract the result rows
     LinkedList<Object[]> rowsInSelectionResults = new LinkedList<>();
@@ -153,9 +144,10 @@ public class SelectionOperatorService {
       for (int i = 0; i < numColumns; i++) {
         Object value = row[columnIndices[i]];
         if (value != null) {
-          extractedRow[i] = resultColumnDataTypes[i].convertAndFormat(value);
+          extractedRow[i] = resultDataSchema.getColumnDataType(i).convertAndFormat(value);
         }
       }
+
       rowsInSelectionResults.addFirst(extractedRow);
     }
 

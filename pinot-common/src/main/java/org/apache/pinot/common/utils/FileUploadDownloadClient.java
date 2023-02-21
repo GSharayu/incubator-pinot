@@ -119,6 +119,8 @@ public class FileUploadDownloadClient implements AutoCloseable {
   private static final String FORCE_REVERT_PARAMETER = "&forceRevert=";
   private static final String FORCE_CLEANUP_PARAMETER = "&forceCleanup=";
 
+  private static final String RETENTION_PARAMETER = "retention=";
+
   private static final List<String> SUPPORTED_PROTOCOLS = Arrays.asList(HTTP, HTTPS);
 
   private final HttpClient _httpClient;
@@ -133,6 +135,33 @@ public class FileUploadDownloadClient implements AutoCloseable {
 
   public HttpClient getHttpClient() {
     return _httpClient;
+  }
+
+  /**
+   * Extracts base URI from a URI, e.g., http://example.com:8000/a/b -> http://example.com:8000
+   * @param fullURI a full URI with
+   * @return a URI
+   * @throws URISyntaxException when there are problems generating the URI
+   */
+  public static URI extractBaseURI(URI fullURI)
+      throws URISyntaxException {
+    return getURI(fullURI.getScheme(), fullURI.getHost(), fullURI.getPort());
+  }
+
+  /**
+   * Generates a URI from the given protocol, host and port
+   * @param protocol the protocol part of the URI
+   * @param host the host part of the URI
+   * @param port the port part of the URI
+   * @return a URI
+   * @throws URISyntaxException when there are problems generating the URIg
+   */
+  public static URI getURI(String protocol, String host, int port)
+      throws URISyntaxException {
+    if (!SUPPORTED_PROTOCOLS.contains(protocol)) {
+      throw new IllegalArgumentException(String.format("Unsupported protocol '%s'", protocol));
+    }
+    return new URI(protocol, null, host, port, null, null, null);
   }
 
   public static URI getURI(String protocol, String host, int port, String path)
@@ -234,6 +263,30 @@ public class FileUploadDownloadClient implements AutoCloseable {
   public static URI getUploadSchemaURI(String protocol, String host, int port)
       throws URISyntaxException {
     return getURI(protocol, host, port, SCHEMA_PATH);
+  }
+
+  public static URI getDeleteSchemaURI(String protocol, String host, int port, String schemaName)
+      throws URISyntaxException {
+    return getURI(protocol, host, port, SCHEMA_PATH + "/" + schemaName);
+  }
+
+  public static URI getDeleteTableURI(String protocol, String host, int port, String tableName, String type,
+      String retention)
+      throws URISyntaxException {
+    StringBuilder sb = new StringBuilder();
+    if (StringUtils.isNotBlank(type)) {
+      sb.append(TYPE_DELIMITER);
+      sb.append(type);
+    }
+    if (StringUtils.isNotBlank(retention)) {
+      if (sb.length() > 0) {
+        sb.append("&");
+      }
+      sb.append(RETENTION_PARAMETER);
+      sb.append(retention);
+    }
+    String query = sb.length() == 0 ? null : sb.toString();
+    return getURI(protocol, host, port, TABLES_PATH + "/" + tableName, query);
   }
 
   public static URI getUploadSchemaURI(URI controllerURI)
@@ -757,9 +810,33 @@ public class FileUploadDownloadClient implements AutoCloseable {
   /**
    * Returns a map from a given tableType to a list of segments for that given tableType (OFFLINE or REALTIME)
    * If tableType is left unspecified, both OFFLINE and REALTIME segments will be returned in the map.
+   * @param controllerBaseUri the base controller URI, e.g., https://example.com:8000
+   * @param rawTableName the raw table name without table type
+   * @param tableType the table type (OFFLINE or REALTIME)
+   * @param excludeReplacedSegments whether to exclude replaced segments (determined by segment lineage)
+   * @return a map from a given tableType to a list of segment names
+   * @throws Exception when failed to get segments from the controller
    */
-  public Map<String, List<String>> getSegments(URI controllerUri, String rawTableName, @Nullable TableType tableType,
-      boolean excludeReplacedSegments) throws Exception {
+  public Map<String, List<String>> getSegments(URI controllerBaseUri, String rawTableName,
+      @Nullable TableType tableType, boolean excludeReplacedSegments)
+      throws Exception {
+    return getSegments(controllerBaseUri, rawTableName, tableType, excludeReplacedSegments, null);
+  }
+
+  /**
+   * Returns a map from a given tableType to a list of segments for that given tableType (OFFLINE or REALTIME)
+   * If tableType is left unspecified, both OFFLINE and REALTIME segments will be returned in the map.
+   * @param controllerBaseUri the base controller URI, e.g., https://example.com:8000
+   * @param rawTableName the raw table name without table type
+   * @param tableType the table type (OFFLINE or REALTIME)
+   * @param excludeReplacedSegments whether to exclude replaced segments (determined by segment lineage)
+   * @param authProvider the {@link AuthProvider}
+   * @return a map from a given tableType to a list of segment names
+   * @throws Exception when failed to get segments from the controller
+   */
+  public Map<String, List<String>> getSegments(URI controllerBaseUri, String rawTableName,
+      @Nullable TableType tableType, boolean excludeReplacedSegments, @Nullable AuthProvider authProvider)
+      throws Exception {
     List<String> tableTypes;
     if (tableType == null) {
       tableTypes = Arrays.asList(TableType.OFFLINE.toString(), TableType.REALTIME.toString());
@@ -767,13 +844,14 @@ public class FileUploadDownloadClient implements AutoCloseable {
       tableTypes = Arrays.asList(tableType.toString());
     }
     ControllerRequestURLBuilder controllerRequestURLBuilder =
-        ControllerRequestURLBuilder.baseUrl(controllerUri.toString());
+        ControllerRequestURLBuilder.baseUrl(controllerBaseUri.toString());
     Map<String, List<String>> tableTypeToSegments = new HashMap<>();
     for (String tableTypeToFilter : tableTypes) {
       tableTypeToSegments.put(tableTypeToFilter, new ArrayList<>());
-      String uri = controllerRequestURLBuilder.forSegmentListAPI(rawTableName,
-          tableTypeToFilter, excludeReplacedSegments);
+      String uri =
+          controllerRequestURLBuilder.forSegmentListAPI(rawTableName, tableTypeToFilter, excludeReplacedSegments);
       RequestBuilder requestBuilder = RequestBuilder.get(uri).setVersion(HttpVersion.HTTP_1_1);
+      AuthProviderUtils.toRequestHeaders(authProvider).forEach(requestBuilder::addHeader);
       HttpClient.setTimeout(requestBuilder, HttpClient.DEFAULT_SOCKET_TIMEOUT_MS);
       RetryPolicies.exponentialBackoffRetryPolicy(5, 10_000L, 2.0).attempt(() -> {
         try {

@@ -29,11 +29,12 @@ import java.nio.ByteBuffer;
 import java.util.HashMap;
 import java.util.Map;
 import javax.annotation.Nullable;
+import org.apache.pinot.common.CustomObject;
 import org.apache.pinot.common.datablock.DataBlockUtils;
-import org.apache.pinot.common.request.context.ThreadTimer;
 import org.apache.pinot.common.response.ProcessingException;
 import org.apache.pinot.common.utils.DataSchema;
 import org.apache.pinot.common.utils.RoaringBitmapUtils;
+import org.apache.pinot.spi.accounting.ThreadResourceUsageProvider;
 import org.apache.pinot.spi.annotations.InterfaceStability;
 import org.apache.pinot.spi.utils.BigDecimalUtils;
 import org.apache.pinot.spi.utils.ByteArray;
@@ -376,14 +377,14 @@ public class DataTableImplV4 implements DataTable {
   @Override
   public byte[] toBytes()
       throws IOException {
-    ThreadTimer threadTimer = new ThreadTimer();
+    ThreadResourceUsageProvider threadTimer = new ThreadResourceUsageProvider();
 
     ByteArrayOutputStream byteArrayOutputStream = new ByteArrayOutputStream();
     DataOutputStream dataOutputStream = new DataOutputStream(byteArrayOutputStream);
     writeLeadingSections(dataOutputStream);
 
     // Add table serialization time metadata if thread timer is enabled.
-    if (ThreadTimer.isThreadCpuTimeMeasurementEnabled()) {
+    if (ThreadResourceUsageProvider.isThreadCpuTimeMeasurementEnabled()) {
       long responseSerializationCpuTimeNs = threadTimer.getThreadTimeNs();
       getMetadata().put(MetadataKey.RESPONSE_SER_CPU_TIME_NS.getName(), String.valueOf(responseSerializationCpuTimeNs));
     }
@@ -632,41 +633,13 @@ public class DataTableImplV4 implements DataTable {
   public String toString() {
     if (_dataSchema == null) {
       return _metadata.toString();
+    } else {
+      StringBuilder stringBuilder = new StringBuilder();
+      stringBuilder.append("resultSchema:").append('\n');
+      stringBuilder.append(_dataSchema).append('\n');
+      stringBuilder.append("numRows: ").append(_numRows).append('\n');
+      stringBuilder.append("metadata: ").append(_metadata.toString()).append('\n');
+      return stringBuilder.toString();
     }
-
-    StringBuilder stringBuilder = new StringBuilder();
-    stringBuilder.append(_dataSchema).append('\n');
-    stringBuilder.append("numRows: ").append(_numRows).append('\n');
-
-    DataSchema.ColumnDataType[] storedColumnDataTypes = _dataSchema.getStoredColumnDataTypes();
-    _fixedSizeData.position(0);
-    for (int rowId = 0; rowId < _numRows; rowId++) {
-      for (int colId = 0; colId < _numColumns; colId++) {
-        switch (storedColumnDataTypes[colId]) {
-          case INT:
-            stringBuilder.append(_fixedSizeData.getInt());
-            break;
-          case LONG:
-            stringBuilder.append(_fixedSizeData.getLong());
-            break;
-          case FLOAT:
-            stringBuilder.append(_fixedSizeData.getFloat());
-            break;
-          case DOUBLE:
-            stringBuilder.append(_fixedSizeData.getDouble());
-            break;
-          case STRING:
-            stringBuilder.append(_fixedSizeData.getInt());
-            break;
-          // Object and array.
-          default:
-            stringBuilder.append(String.format("(%s:%s)", _fixedSizeData.getInt(), _fixedSizeData.getInt()));
-            break;
-        }
-        stringBuilder.append("\t");
-      }
-      stringBuilder.append("\n");
-    }
-    return stringBuilder.toString();
   }
 }

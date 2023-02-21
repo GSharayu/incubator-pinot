@@ -20,16 +20,26 @@ package org.apache.pinot.query.mailbox;
 
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.TimeUnit;
+import java.util.function.Consumer;
 import org.apache.pinot.query.runtime.blocks.TransferableBlock;
 
 
 public class InMemorySendingMailbox implements SendingMailbox<TransferableBlock> {
-  private final BlockingQueue<TransferableBlock> _queue;
+  private final Consumer<MailboxIdentifier> _gotMailCallback;
   private final String _mailboxId;
 
-  public InMemorySendingMailbox(String mailboxId, BlockingQueue<TransferableBlock> queue) {
+  // TODO: changed to 2-way communication channel.
+  private BlockingQueue<TransferableBlock> _queue;
+
+  public InMemorySendingMailbox(String mailboxId, BlockingQueue<TransferableBlock> queue,
+      Consumer<MailboxIdentifier> gotMailCallback) {
     _mailboxId = mailboxId;
     _queue = queue;
+    _gotMailCallback = gotMailCallback;
+  }
+
+  @Override
+  public void open() {
   }
 
   @Override
@@ -40,17 +50,24 @@ public class InMemorySendingMailbox implements SendingMailbox<TransferableBlock>
   @Override
   public void send(TransferableBlock data)
       throws UnsupportedOperationException {
-    try {
-      if (!_queue.offer(
-          data, InMemoryMailboxService.DEFAULT_CHANNEL_TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
-        throw new RuntimeException(String.format("Timed out when sending block in mailbox=%s", _mailboxId));
-      }
-    } catch (InterruptedException e) {
-      throw new RuntimeException("Interrupted trying to send data through the channel", e);
+    if (!_queue.offer(data)) {
+      // this should never happen, since we use a LinkedBlockingQueue
+      // which does not have capacity bounds
+      throw new IllegalStateException("Failed to insert into in-memory mailbox " + _mailboxId);
     }
+    _gotMailCallback.accept(JsonMailboxIdentifier.parse(_mailboxId));
   }
 
   @Override
   public void complete() {
+  }
+
+  @Override
+  public void waitForFinish(long timeout, TimeUnit unit)
+      throws InterruptedException {
+  }
+
+  @Override
+  public void cancel(Throwable t) {
   }
 }

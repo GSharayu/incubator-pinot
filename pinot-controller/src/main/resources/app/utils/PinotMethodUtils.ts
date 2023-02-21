@@ -97,6 +97,8 @@ import {
 } from '../requests';
 import { baseApi } from './axios-config';
 import Utils, { getDisplaySegmentStatus } from './Utils';
+import { matchPath } from 'react-router';
+import RouterData from '../router';
 const JSONbig = require('json-bigint')({'storeAsString': true})
 
 // This method is used to display tenants listing on cluster manager home page
@@ -270,15 +272,17 @@ const getQueryResults = (params) => {
     // if sql api throws error, handle here
     if(typeof queryResponse === 'string'){
       errorStr = queryResponse;
-    } else if (queryResponse && queryResponse.exceptions && queryResponse.exceptions.length) {
-      errorStr = JSON.stringify(queryResponse.exceptions, null, 2);
-    } else
-    {
-      if (queryResponse.resultTable?.dataSchema?.columnNames?.length)
-      {
-        columnList = queryResponse.resultTable.dataSchema.columnNames;
-        dataArray = queryResponse.resultTable.rows;
+    } 
+    if (queryResponse && queryResponse.exceptions && queryResponse.exceptions.length) {
+      try{
+        errorStr = JSON.stringify(queryResponse.exceptions, null, 2);
+      } catch {
+        errorStr = "";
       }
+    } 
+    if (queryResponse.resultTable?.dataSchema?.columnNames?.length) {
+      columnList = queryResponse.resultTable.dataSchema.columnNames;
+      dataArray = queryResponse.resultTable.rows;
     }
 
     const columnStats = ['timeUsedMs',
@@ -352,13 +356,28 @@ const getSchemaObject = async (schemaName) =>{
       return schemaObj;
   }
 
+// This method is used to display schema listing on the tables listing page
+// API: /schemas
+// Expected Output: {columns: [], records: []}
+const getListingSchemaList = () => {
+  return getSchemaList().then((results) => {
+    const responseObj = {
+      columns: ['Schemas'],
+      records: []
+    };
+    results.data.forEach((result)=>{
+      responseObj.records.push([result]);
+    });
+    return responseObj;
+  })
+};
+
 const allSchemaDetailsColumnHeader = ["Schema Name", "Dimension Columns", "Date-Time Columns", "Metrics Columns", "Total Columns"];
 
-const getAllSchemaDetails = async () => {
+const getAllSchemaDetails = async (schemaList) => {
   let schemaDetails:Array<any> = [];
   let promiseArr = [];
-  const {data} = await getSchemaList()
-  promiseArr = data.map(async (o)=>{
+  promiseArr = schemaList.map(async (o)=>{
     return await getSchema(o);
   });
   const results = await Promise.all(promiseArr);
@@ -876,8 +895,8 @@ const deleteSegmentOp = (tableName, segmentName) => {
   });
 };
 
-const fetchTableJobs = async (tableName: string) => {
-  const response = await getTableJobs(tableName);
+const fetchTableJobs = async (tableName: string, jobTypes?: string) => {
+  const response = await getTableJobs(tableName, jobTypes);
   
   return response.data;
 }
@@ -991,6 +1010,37 @@ const getAccessTokenFromHashParams = () => {
   return accessToken;
 };
 
+
+// validates app redirect path with known routes
+const validateRedirectPath = (path: string): boolean => {
+  if(!path) {
+    return false;
+  }
+
+  if(!path.startsWith("/")) {
+    path = "/" + path;
+  }
+
+  let pathName = "";
+
+  try {
+    const appUrl = new URL(location.origin + path);
+    pathName = appUrl.pathname;
+  } catch(err) {
+    console.error(err);
+    return false;
+  }
+
+  const knownAppRoutes = RouterData.map((data) => data.path);
+  const routeMatches = matchPath(pathName, {path: knownAppRoutes, exact: true});
+  
+  if(!routeMatches) {
+    return false;
+  }
+
+  return true;
+};
+
 const getURLWithoutAccessToken = (fallbackUrl = '/'): string => {
   let prefix = '';
   let url = location.hash.substring(1);
@@ -1022,6 +1072,12 @@ const getURLWithoutAccessToken = (fallbackUrl = '/'): string => {
     }
     
     url = urlParams.join('&');
+
+    if(!validateRedirectPath(url)) {
+      // constructed redirect url is not a valid app route
+      // redirect to fallBackUrl
+      url = fallbackUrl;
+    }
   } else {
     url = fallbackUrl;
   }
@@ -1157,6 +1213,7 @@ export default {
   saveSchemaAction,
   saveTableAction,
   getSchemaData,
+  getQuerySchemaList: getListingSchemaList,
   allSchemaDetailsColumnHeader,
   getAllSchemaDetails,
   getTableState,
